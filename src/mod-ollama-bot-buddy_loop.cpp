@@ -1389,29 +1389,40 @@ static nlohmann::json BuildBotActionSchema(Player* bot, size_t destCount, float 
         paramProps["destination_index"] = destIndexSchema;
     }
 
+    nlohmann::json commandSchema = {
+        {"type", "object"},
+        {"properties", {
+            {"type", {
+                {"type", "string"},
+                {"enum", {"move_to", "attack", "interact", "spell",
+                          "loot", "follow", "stop",
+                          "accept_quest", "turn_in_quest"}}
+            }},
+            {"params", {
+                {"type", "object"},
+                {"properties", paramProps}
+            }}
+        }},
+        {"required", {"type", "params"}}
+    };
+
     return nlohmann::json{
         {"type", "object"},
         {"properties", {
-            {"command", {
-                {"type", "object"},
-                {"properties", {
-                    {"type", {
-                        {"type", "string"},
-                        {"enum", {"move_to", "attack", "interact", "spell",
-                                  "loot", "follow", "stop",
-                                  "accept_quest", "turn_in_quest"}}
-                    }},
-                    {"params", {
-                        {"type", "object"},
-                        {"properties", paramProps}
-                    }}
-                }},
-                {"required", {"type", "params"}}
+            {"command", commandSchema},
+            // A short ordered plan. The grammar caps it so the model cannot
+            // emit a sprawling sequence that is stale by the time it runs.
+            {"intent", {{"type", "string"}}},
+            {"steps", {
+                {"type", "array"},
+                {"minItems", 1},
+                {"maxItems", 4},
+                {"items", commandSchema}
             }},
             {"reasoning", {{"type", "string"}}},
             {"say", {{"type", "string"}}}
         }},
-        {"required", {"command"}}
+        {"required", {"steps"}}
     };
 }
 
@@ -1974,6 +1985,47 @@ namespace
     // was once LLM-driven would enter a battleground or dungeon permanently
     // stripped of the AI that content depends on.
     std::unordered_set<uint64_t> ollamaTakenOver;
+
+    // LLM replies waiting to be applied on the world thread.
+    //
+    // The HTTP call blocks for seconds so it runs on a detached thread, but
+    // nothing there may touch game state: the bot can log out, be level-reset
+    // by the bracket system, or the server can shut down mid-request. The
+    // worker therefore only parks the raw reply here, keyed by guid, and
+    // OnUpdate drains it on the world thread where the bot is re-resolved.
+    struct OllamaPendingReply
+    {
+        ObjectGuid  botGuid;
+        uint64_t    stateKey;
+        std::string reply;
+    };
+    std::vector<OllamaPendingReply> ollamaPendingReplies;
+    std::mutex ollamaPendingRepliesMutex;
+
+    // Multi-step plans.
+    //
+    // Previously the model emitted one action per request with no memory of
+    // intent, so it could not express "walk to the quest giver, then talk to
+    // him, then take the quest" -- and with no feedback on whether the last
+    // action worked it would re-issue the same step indefinitely.
+    //
+    // A plan is a short ordered list of steps executed one per decision tick.
+    // The LLM is only consulted when a plan runs out or fails, which also cuts
+    // inference cost roughly in proportion to plan length.
+    struct OllamaBotPlan
+    {
+        std::string              intent;
+        std::vector<std::string> steps;   // each a serialised command object
+        size_t                   next { 0 };
+    };
+    std::unordered_map<uint64_t, OllamaBotPlan> ollamaBotPlans;
+
+    // Speculative next plan, requested while the final step of the current plan
+    // is still executing. Inference takes seconds; without this the bot stalls
+    // for a full round trip between every plan. The speculation is that the last
+    // step succeeds, so a failed final step discards the prefetch: it was built
+    // against a world state that never happened.
+    std::unordered_map<uint64_t, OllamaBotPlan> ollamaPrefetchedPlans;
 }
 
 // Hand a bot back to playerbots with its native strategies rebuilt.
@@ -2014,9 +2066,142 @@ std::string EscapeBracesForFmt(const std::string& input) {
     return output;
 }
 
+// Fire an LLM request for this bot. World thread only: it reads the bot's map
+// to build the prompt and schema, then hands the blocking HTTP call to a worker.
+static void FireLlmRequest(Player* bot, uint64_t guid, OllamaBotState& state)
+{
+    state.busy = true;
+    state.lastRequest = time(nullptr);
+
+    std::string prompt = BuildBotPrompt(bot);
+
+    size_t destCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_botDestinationsMutex);
+        auto it = g_botDestinations.find(bot->GetGUID().GetRawValue());
+        if (it != g_botDestinations.end()) destCount = it->second.size();
+    }
+    nlohmann::json actionSchema = BuildBotActionSchema(bot, destCount);
+
+    ObjectGuid botGuid = bot->GetGUID();
+    std::thread([botGuid, guid, prompt, actionSchema]() {
+        std::string llmReply = QueryOllamaLLM(prompt, actionSchema);
+
+        std::lock_guard<std::mutex> lock(ollamaPendingRepliesMutex);
+        ollamaPendingReplies.push_back({botGuid, guid, std::move(llmReply)});
+    }).detach();
+}
+
 void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
 {
     if (!g_EnableOllamaBotControl) return;
+
+    // Apply any LLM replies that arrived since the last tick. This runs on the
+    // world thread, so re-resolving the guid here is the point at which it is
+    // safe to touch the bot at all.
+    {
+        std::vector<OllamaPendingReply> ready;
+        {
+            std::lock_guard<std::mutex> lock(ollamaPendingRepliesMutex);
+            ready.swap(ollamaPendingReplies);
+        }
+
+        for (auto const& pending : ready)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(pending.botGuid);
+
+            if (bot && bot->IsInWorld() && !pending.reply.empty())
+            {
+                if (g_EnableOllamaBotBuddyDebug)
+                {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] LLM reply for \'{}\':\n{}",
+                             bot->GetName(), EscapeBracesForFmt(pending.reply));
+                }
+
+                std::string jsonOnly = ExtractFirstJsonObject(pending.reply);
+                if (!jsonOnly.empty())
+                {
+                    // Store the plan and run its first step now. Later steps run
+                    // on subsequent ticks without another LLM round trip.
+                    try
+                    {
+                        auto root = nlohmann::json::parse(jsonOnly);
+
+                        OllamaBotPlan plan;
+                        plan.intent = root.value("intent", "");
+
+                        if (root.contains("steps") && root["steps"].is_array())
+                        {
+                            for (auto const& step : root["steps"])
+                                plan.steps.push_back(step.dump());
+                        }
+                        else if (root.contains("command"))
+                        {
+                            // Older single-command shape.
+                            plan.steps.push_back(root["command"].dump());
+                        }
+
+                        if (!plan.steps.empty())
+                        {
+                            // If a plan is still running, this reply is the
+                            // speculative prefetch for after it finishes. Park
+                            // it rather than interrupting the bot mid-sequence.
+                            auto activeIt = ollamaBotPlans.find(pending.stateKey);
+                            if (activeIt != ollamaBotPlans.end() && activeIt->second.next < activeIt->second.steps.size())
+                            {
+                                ollamaPrefetchedPlans[pending.stateKey] = std::move(plan);
+
+                                auto stIt = ollamaBotStates.find(pending.stateKey);
+                                if (stIt != ollamaBotStates.end())
+                                    stIt->second.busy = false;
+                                continue;
+                            }
+
+                            std::string say = root.value("say", "");
+                            std::string reasoning = root.value("reasoning", "");
+
+                            // Execute step 0 immediately so the bot reacts at the
+                            // same latency it did before plans existed.
+                            nlohmann::json first;
+                            first["command"] = nlohmann::json::parse(plan.steps[0]);
+                            if (!say.empty())       first["say"] = say;
+                            if (!reasoning.empty()) first["reasoning"] = reasoning;
+
+                            bool ok = ParseAndExecuteBotJson(bot, first.dump());
+                            plan.next = 1;
+
+                            // A failed opening step means the plan was built on a
+                            // bad read of the world; do not run the rest of it.
+                            if (ok && plan.next < plan.steps.size())
+                                ollamaBotPlans[pending.stateKey] = std::move(plan);
+                            else
+                                ollamaBotPlans.erase(pending.stateKey);
+                        }
+                    }
+                    catch (std::exception const& e)
+                    {
+                        LOG_ERROR("server.loading", "[OllamaBotBuddy] Plan parse error: {}", e.what());
+                        ollamaBotPlans.erase(pending.stateKey);
+                    }
+
+                    // Rebuild the prompt so the latest command shows in history
+                    std::string updatedPrompt = BuildBotPrompt(bot);
+                    SendBuddyBotStateToPlayer(bot, bot, updatedPrompt);
+                }
+                else
+                {
+                    LOG_ERROR("server.loading",
+                              "[OllamaBotBuddy] No valid JSON object found in LLM reply: {}", pending.reply);
+                }
+            }
+
+            // Always clear busy, even when the bot vanished, or that guid would
+            // never be queried again.
+            auto it = ollamaBotStates.find(pending.stateKey);
+            if (it != ollamaBotStates.end())
+                it->second.busy = false;
+        }
+    }
 
     // Idle gate: with nobody logged in there is no one to watch the bot, but the
     // loop still issued an LLM request every few seconds. That pinned the model
@@ -2136,6 +2321,85 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
         // the configured interval. lastRequest was previously recorded but never
         // checked, so bots re-queried as fast as Ollama could answer.
         time_t now = time(nullptr);
+
+        // If this bot has an unfinished plan, run its next step instead of
+        // asking the LLM again. This is what makes behaviour multi-step: the
+        // model states an intent once and the bot follows through, and it costs
+        // one inference per plan rather than one per action.
+        {
+            auto planIt = ollamaBotPlans.find(guid);
+            if (planIt != ollamaBotPlans.end())
+            {
+                OllamaBotPlan& plan = planIt->second;
+
+                if (plan.next >= plan.steps.size())
+                {
+                    ollamaBotPlans.erase(planIt);
+
+                    // Adopt the speculatively fetched plan so the bot continues
+                    // without waiting on a fresh round trip.
+                    auto pre = ollamaPrefetchedPlans.find(guid);
+                    if (pre != ollamaPrefetchedPlans.end())
+                    {
+                        ollamaBotPlans[guid] = std::move(pre->second);
+                        ollamaPrefetchedPlans.erase(pre);
+                    }
+                }
+                else if ((now - state.lastRequest) >= static_cast<time_t>(g_OllamaDecisionInterval))
+                {
+                    nlohmann::json wrapped;
+                    try
+                    {
+                        wrapped["command"] = nlohmann::json::parse(plan.steps[plan.next]);
+                        if (!plan.intent.empty())
+                            wrapped["reasoning"] = "Continuing plan: " + plan.intent;
+                    }
+                    catch (std::exception const&)
+                    {
+                        ollamaBotPlans.erase(planIt);
+                        continue;
+                    }
+
+                    bool const isFinalStep = (plan.next + 1 >= plan.steps.size());
+
+                    ++plan.next;
+                    state.lastRequest = now;
+
+                    // Speculatively request the next plan while the final step
+                    // runs, so the inference latency overlaps execution instead
+                    // of stalling the bot afterwards.
+                    if (isFinalStep && !state.busy && ollamaPrefetchedPlans.find(guid) == ollamaPrefetchedPlans.end())
+                        FireLlmRequest(bot, guid, state);
+
+                    // A failed step invalidates the rest: the world has moved on
+                    // from whatever the plan assumed, so re-plan next tick. The
+                    // prefetch assumed this step succeeded, so it goes too.
+                    if (!ParseAndExecuteBotJson(bot, wrapped.dump()))
+                    {
+                        ollamaBotPlans.erase(guid);
+                        ollamaPrefetchedPlans.erase(guid);
+                    }
+                    else if (plan.next >= plan.steps.size())
+                    {
+                        ollamaBotPlans.erase(guid);
+
+                        auto pre = ollamaPrefetchedPlans.find(guid);
+                        if (pre != ollamaPrefetchedPlans.end())
+                        {
+                            ollamaBotPlans[guid] = std::move(pre->second);
+                            ollamaPrefetchedPlans.erase(pre);
+                        }
+                    }
+
+                    continue;   // no LLM request this tick
+                }
+                else
+                {
+                    continue;   // plan pending, waiting on the interval
+                }
+            }
+        }
+
         if (!state.busy && (now - state.lastRequest) >= static_cast<time_t>(g_OllamaDecisionInterval))
         {
             state.busy = true;
@@ -2156,33 +2420,16 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
                 //LOG_INFO("server.loading", "[OllamaBotBuddy] Sending prompt for bot '{}': {}", botName, prompt);
             }
 
-            std::thread([bot, guid, prompt, actionSchema]() {
+            // The HTTP call blocks for seconds, so it runs off the world thread.
+            // It must not touch the bot: capturing a raw Player* and using it
+            // after the call is a use-after-free if the bot goes away during
+            // inference. Park the reply instead; OnUpdate applies it.
+            ObjectGuid botGuid = bot->GetGUID();
+            std::thread([botGuid, guid, prompt, actionSchema]() {
                 std::string llmReply = QueryOllamaLLM(prompt, actionSchema);
 
-                if (g_EnableOllamaBotBuddyDebug)
-                {
-                    std::string safeJson = EscapeBracesForFmt(llmReply);
-                    LOG_INFO("server.loading", "[OllamaBotBuddy] LLM reply for '{}':\n{}", bot->GetName(), safeJson);
-
-                }
-
-                if (!llmReply.empty())
-                {
-                    std::string jsonOnly = ExtractFirstJsonObject(llmReply);
-                    if (!jsonOnly.empty()) {
-                        ParseAndExecuteBotJson(bot, jsonOnly);
-                        
-                        // Rebuild the prompt to include the latest command in history
-                        std::string updatedPrompt = BuildBotPrompt(bot);
-                        SendBuddyBotStateToPlayer(bot, bot, updatedPrompt);
-
-                    } else {
-                        LOG_ERROR("server.loading", "[OllamaBotBuddy] No valid JSON object found in LLM reply: {}", llmReply);
-                    }
-                }
-
-                // Mark ready for the next request
-                ollamaBotStates[guid].busy = false;
+                std::lock_guard<std::mutex> lock(ollamaPendingRepliesMutex);
+                ollamaPendingReplies.push_back({botGuid, guid, std::move(llmReply)});
             }).detach();
         }
     }
