@@ -11,9 +11,14 @@ class BotBuddyChatHandler : public PlayerScript
 public:
     BotBuddyChatHandler() : PlayerScript("BotBuddyChatHandler") {}
 
-    void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg) override;
-    void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Group* group) override;
-    void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Channel* channel) override;
+    // AzerothCore replaced the observational OnPlayerChat hooks with the
+    // bool-returning OnPlayerCanUseChat family. We only observe chat, so these
+    // always allow the message through.
+    using PlayerScript::OnPlayerCanUseChat;
+
+    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 lang, std::string& msg) override;
+    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 lang, std::string& msg, Group* group) override;
+    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 lang, std::string& msg, Channel* channel) override;
 
 private:
     void ProcessChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Channel* channel = nullptr);

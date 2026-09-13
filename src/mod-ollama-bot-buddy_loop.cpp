@@ -8,9 +8,11 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "Log.h"
+#include "DatabaseEnv.h"
 #include <thread>
 #include <sstream>
 #include <vector>
+#include <unordered_set>
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 #include <ctime>
@@ -91,6 +93,15 @@ std::string FormatPlayerMessagesPromptSegment(Player* bot)
     return oss.str();
 }
 
+struct BotDestination
+{
+    std::string label;
+    float x, y, z;
+};
+
+static std::unordered_map<uint64_t, std::vector<BotDestination>> g_botDestinations;
+static std::mutex g_botDestinationsMutex;
+
 bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
 {
     try
@@ -119,7 +130,36 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
 
         if (type == "move_to")
         {
-            if (params.contains("x") && params.contains("y") && params.contains("z")) {
+            // Preferred path: an index into the pre-validated destination list
+            // built for this bot on the world thread. Already range-checked and
+            // pathable, so it skips the distance/path guards below.
+            if (params.contains("destination_index"))
+            {
+                uint32_t idx = params["destination_index"].get<uint32_t>();
+                BotDestination dest;
+                bool found = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_botDestinationsMutex);
+                    auto it = g_botDestinations.find(bot->GetGUID().GetRawValue());
+                    if (it != g_botDestinations.end() && idx < it->second.size())
+                    {
+                        dest = it->second[idx];
+                        found = true;
+                    }
+                }
+                if (!found)
+                {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] destination_index {} out of range", idx);
+                    return false;
+                }
+                // Falls through to the shared dispatch below so `say` and
+                // command history are handled the same as any other command.
+                command.type = BotControlCommandType::MoveTo;
+                command.args = { std::to_string(dest.x),
+                                 std::to_string(dest.y),
+                                 std::to_string(dest.z) };
+            }
+            else if (params.contains("x") && params.contains("y") && params.contains("z")) {
                 float destX = params["x"].get<float>();
                 float destY = params["y"].get<float>();
                 float destZ = params["z"].get<float>();
@@ -336,6 +376,19 @@ std::string ExtractFirstJsonObject(const std::string& input) {
     return ""; // No JSON object found
 }
 
+// Role tag for group context. Without this the model sees five similar-looking
+// party members and cannot tell who is tanking, who is healing, or who it
+// should be protecting: the information a dungeon or raid decision depends on.
+static std::string GroupRoleTag(Player* p)
+{
+    if (!p) return "[UNKNOWN]";
+    if (PlayerbotAI::IsTank(p))   return "[TANK]";
+    if (PlayerbotAI::IsHeal(p))   return "[HEALER]";
+    if (PlayerbotAI::IsRanged(p)) return "[RANGED DPS]";
+    if (PlayerbotAI::IsMelee(p))  return "[MELEE DPS]";
+    return "[DPS]";
+}
+
 std::vector<std::string> GetGroupStatus(Player* bot)
 {
     std::vector<std::string> info;
@@ -367,13 +420,21 @@ std::vector<std::string> GetGroupStatus(Player* bot)
             );
         }
 
+        // HP as a percentage: an LLM compares "31%" far more reliably than it
+        // compares "4210/13500" across five party members.
+        uint32 hpPct = member->GetMaxHealth() ? uint32((100.0 * member->GetHealth()) / member->GetMaxHealth()) : 0;
+        std::string who = PlayerbotsMgr::instance().GetPlayerbotAI(member) ? "" : " [REAL PLAYER - follow their lead]";
+
         info.push_back(fmt::format(
-            "{} (guid: {}, Level: {}, HP: {}/{}, Pos: {} {} {}, Dist: {:.1f}){}",
+            "{} {}{} (guid: {}, Level: {}, HP: {}/{} = {}%, Pos: {} {} {}, Dist: {:.1f}){}",
             member->GetName(),
+            GroupRoleTag(member),
+            who,
             member->GetGUID().GetCounter(),
             member->GetLevel(),
             member->GetHealth(),
             member->GetMaxHealth(),
+            hpPct,
             member->GetPositionX(),
             member->GetPositionY(),
             member->GetPositionZ(),
@@ -800,6 +861,28 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         if (!bot->IsWithinDistInMap(go, radius)) continue;
         if (!bot->IsWithinLOS(go->GetPositionX(), go->GetPositionY(), go->GetPositionZ())) continue;
 
+        // Only list game objects a bot can meaningfully act on.
+        //
+        // Every chair, bench and campfire in line of sight was being listed with
+        // full coordinates. In a populated inn that is a dozen useless entries
+        // crowding out actual targets, and it inflates a ~2000 token prompt that
+        // is now paid for once per bot per decision across a whole party.
+        switch (go->GetGoType())
+        {
+            case GAMEOBJECT_TYPE_DOOR:
+            case GAMEOBJECT_TYPE_BUTTON:
+            case GAMEOBJECT_TYPE_QUESTGIVER:
+            case GAMEOBJECT_TYPE_CHEST:
+            case GAMEOBJECT_TYPE_GOOBER:
+            case GAMEOBJECT_TYPE_SPELLCASTER:
+            case GAMEOBJECT_TYPE_FISHINGHOLE:
+            case GAMEOBJECT_TYPE_FLAGSTAND:
+            case GAMEOBJECT_TYPE_FLAGDROP:
+                break;
+            default:
+                continue;   // chairs, campfires, decor
+        }
+
         std::string tag = "";
 
         if (GameObjectTemplate const* tmpl = go->GetGOInfo())
@@ -1181,23 +1264,155 @@ std::vector<std::string> GetNearbyWaypoints(Player* bot, float radius = 200.0f)
     float bot_y = bot->GetPositionY();
     float bot_z = bot->GetPositionZ();
 
-    auto nodes = sTravelNodeMap->getNodes();
+    auto nodes = sTravelNodeMap.getNodes();
     int idx = 0;
     for (TravelNode* node : nodes)
     {
         if (!node) continue;
         WorldPosition* pos = node->getPosition();
         if (!pos) continue;
-        if (pos->getMapId() != bot_map) continue;
-        float dx = pos->getX() - bot_x;
-        float dy = pos->getY() - bot_y;
-        float dz = pos->getZ() - bot_z;
+        if (pos->GetMapId() != bot_map) continue;
+        float dx = pos->GetPositionX() - bot_x;
+        float dy = pos->GetPositionY() - bot_y;
+        float dz = pos->GetPositionZ() - bot_z;
         float dist = sqrtf(dx*dx + dy*dy + dz*dz);
         if (dist > radius) continue;
-        wps.push_back(fmt::format("Node #{} '{}' ({:.1f}, {:.1f}, {:.1f}), distance: {:.1f}", idx, node->getName(), pos->getX(), pos->getY(), pos->getZ(), dist));        
+        wps.push_back(fmt::format("Node #{} '{}' ({:.1f}, {:.1f}, {:.1f}), distance: {:.1f}", idx, node->getName(), pos->GetPositionX(), pos->GetPositionY(), pos->GetPositionZ(), dist));        
         ++idx;
     }
     return wps;
+}
+
+
+// ---------------------------------------------------------------------------
+// Structured output schema (Ollama "format" field).
+//
+// Passing format:"json" only guarantees syntactic validity — the model still
+// invented command types, target guids and coordinates on other continents.
+// Passing a full JSON Schema makes Ollama constrain generation at the decoder,
+// so invalid output becomes structurally impossible rather than merely
+// discouraged. Two constraints do the heavy lifting:
+//
+//   * guid  -> enum of guids actually visible to this bot right now.
+//   * x/y/z -> numeric bounds around the bot's current position, which stops
+//              the model emitting memorised coordinates from another zone.
+//
+// Must be called on the world thread (it touches the bot's map).
+// ---------------------------------------------------------------------------
+static nlohmann::json BuildBotActionSchema(Player* bot, size_t destCount, float radius = 100.0f)
+{
+    std::vector<uint32_t> guids;
+    std::vector<uint32_t> spellIds;
+
+    if (bot && bot->GetMap())
+    {
+        Map* map = bot->GetMap();
+
+        for (auto const& pair : map->GetCreatureBySpawnIdStore())
+        {
+            Creature* c = pair.second;
+            if (!c) continue;
+            if (c->GetGUID() == bot->GetGUID()) continue;
+            if (!bot->IsWithinDistInMap(c, radius)) continue;
+            if (!bot->IsWithinLOS(c->GetPositionX(), c->GetPositionY(), c->GetPositionZ())) continue;
+            if (c->IsPet() || c->IsTotem()) continue;
+            guids.push_back(c->GetGUID().GetCounter());
+        }
+
+        for (auto const& pair : map->GetGameObjectBySpawnIdStore())
+        {
+            GameObject* go = pair.second;
+            if (!go) continue;
+            if (!bot->IsWithinDistInMap(go, radius)) continue;
+            if (!bot->IsWithinLOS(go->GetPositionX(), go->GetPositionY(), go->GetPositionZ())) continue;
+            guids.push_back(go->GetGUID().GetCounter());
+        }
+
+        for (auto const& pair : bot->GetSpellMap())
+        {
+            if (!pair.second || pair.second->State == PLAYERSPELL_REMOVED || !pair.second->Active)
+                continue;
+            spellIds.push_back(pair.first);
+        }
+    }
+
+    // guid: restrict to what the bot can actually see. If nothing is visible we
+    // fall back to a plain integer rather than an empty enum, which no value
+    // could satisfy.
+    nlohmann::json guidSchema = guids.empty()
+        ? nlohmann::json{{"type", "integer"}}
+        : nlohmann::json{{"type", "integer"}, {"enum", guids}};
+
+    nlohmann::json spellSchema = spellIds.empty()
+        ? nlohmann::json{{"type", "integer"}}
+        : nlohmann::json{{"type", "integer"}, {"enum", spellIds}};
+
+    // Coordinate bounds. Generous enough for real exploration, tight enough to
+    // exclude another continent.
+    const float kXYRange = 500.0f;
+    const float kZRange  = 250.0f;
+    float bx = bot ? bot->GetPositionX() : 0.0f;
+    float by = bot ? bot->GetPositionY() : 0.0f;
+    float bz = bot ? bot->GetPositionZ() : 0.0f;
+
+    std::vector<uint32_t> destIndices;
+    for (uint32_t i = 0; i < static_cast<uint32_t>(destCount); ++i) destIndices.push_back(i);
+    nlohmann::json destIndexSchema = destIndices.empty()
+        ? nlohmann::json{{"type", "integer"}}
+        : nlohmann::json{{"type", "integer"}, {"enum", destIndices}};
+
+    auto bounded = [](float centre, float range) {
+        return nlohmann::json{
+            {"type", "number"},
+            {"minimum", centre - range},
+            {"maximum", centre + range}
+        };
+    };
+
+    // When we have a validated destination list, REMOVE x/y/z from the grammar
+    // entirely. Offering both let the model keep emitting raw coordinates (and
+    // it did: it invented -9000,-1000,500 while standing at -707,2734). A
+    // parameter that does not exist in the grammar cannot be produced.
+    nlohmann::json paramProps = {
+        {"guid", guidSchema},
+        {"spellid", spellSchema},
+        {"id", {{"type", "integer"}}}
+    };
+    if (destIndices.empty())
+    {
+        paramProps["x"] = bounded(bx, kXYRange);
+        paramProps["y"] = bounded(by, kXYRange);
+        paramProps["z"] = bounded(bz, kZRange);
+    }
+    else
+    {
+        paramProps["destination_index"] = destIndexSchema;
+    }
+
+    return nlohmann::json{
+        {"type", "object"},
+        {"properties", {
+            {"command", {
+                {"type", "object"},
+                {"properties", {
+                    {"type", {
+                        {"type", "string"},
+                        {"enum", {"move_to", "attack", "interact", "spell",
+                                  "loot", "follow", "stop",
+                                  "accept_quest", "turn_in_quest"}}
+                    }},
+                    {"params", {
+                        {"type", "object"},
+                        {"properties", paramProps}
+                    }}
+                }},
+                {"required", {"type", "params"}}
+            }},
+            {"reasoning", {{"type", "string"}}},
+            {"say", {{"type", "string"}}}
+        }},
+        {"required", {"command"}}
+    };
 }
 
 OllamaBotControlLoop::OllamaBotControlLoop() : WorldScript("OllamaBotControlLoop") {}
@@ -1212,7 +1427,7 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* use
     return totalSize;
 }
 
-static std::string QueryOllamaLLM(const std::string& prompt)
+static std::string QueryOllamaLLM(const std::string& prompt, const nlohmann::json& schema)
 {
     CURL* curl = curl_easy_init();
     if (!curl)
@@ -1223,7 +1438,17 @@ static std::string QueryOllamaLLM(const std::string& prompt)
 
     nlohmann::json requestData = {
         {"model",  g_OllamaBotControlModel},
-        {"prompt", prompt}
+        {"prompt", prompt},
+        // Structured outputs: a full JSON Schema (not just "json") makes Ollama
+        // constrain decoding to the exact command shape, with guids limited to
+        // visible targets and coordinates bounded to the bot's vicinity.
+        {"format", schema},
+        // Cap the reply: a single command is short. Uncapped, a 1B model will
+        // ramble for >1700 tokens, which dominates request latency.
+        {"options", {
+            {"num_predict", 200},
+            {"temperature", 0.2}
+        }}
     };
     std::string requestDataStr = requestData.dump();
 
@@ -1262,6 +1487,73 @@ static std::string QueryOllamaLLM(const std::string& prompt)
         catch (...) {}
     }
     return extracted;
+}
+
+
+// ---------------------------------------------------------------------------
+// Destination candidates.
+//
+// Ollama's structured outputs compile the JSON Schema down to a GBNF grammar.
+// Grammars can express `enum` (it is just alternation) but cannot express
+// numeric `minimum`/`maximum` — those are accepted and then silently ignored.
+// Verified directly: a schema demanding -1207..-207 still returned -9000.
+//
+// So free-form x/y/z can never be constrained by the schema, and models happily
+// emit coordinates memorised from other zones. Every such command is then
+// rejected by the >500y guard in ParseAndExecuteBotJson, so the bot burns a
+// full decision cycle doing nothing.
+//
+// Instead we precompute a short list of real, reachable destinations and let
+// the model choose one by index. An index enum IS enforceable, so an
+// unreachable destination becomes impossible to express rather than merely
+// invalid.
+// ---------------------------------------------------------------------------
+// Computed on the world thread; read later by the reply-handling thread.
+static std::vector<BotDestination> BuildDestinationCandidates(Player* bot, float radius = 100.0f)
+{
+    std::vector<BotDestination> out;
+    if (!bot || !bot->GetMap()) return out;
+
+    Map* map = bot->GetMap();
+    float bx = bot->GetPositionX();
+    float by = bot->GetPositionY();
+    float bz = bot->GetPositionZ();
+
+    auto pathable = [&](float x, float y, float z) {
+        PathGenerator p(bot);
+        p.CalculatePath(x, y, z, false);
+        return !(p.GetPathType() & PATHFIND_NOPATH);
+    };
+
+    // 1. Stand next to something the bot can actually see.
+    for (auto const& pair : map->GetCreatureBySpawnIdStore())
+    {
+        Creature* c = pair.second;
+        if (!c) continue;
+        if (c->GetGUID() == bot->GetGUID()) continue;
+        if (!bot->IsWithinDistInMap(c, radius)) continue;
+        if (!bot->IsWithinLOS(c->GetPositionX(), c->GetPositionY(), c->GetPositionZ())) continue;
+        if (c->IsPet() || c->IsTotem()) continue;
+        if (out.size() >= 12) break;
+        out.push_back({ "next to " + c->GetName(),
+                        c->GetPositionX(), c->GetPositionY(), c->GetPositionZ() });
+    }
+
+    // 2. Cardinal exploration points, only if genuinely pathable.
+    static const struct { char const* name; float dx, dy; } kDirs[] = {
+        { "north", 0.0f, 60.0f }, { "south", 0.0f, -60.0f },
+        { "east",  60.0f, 0.0f }, { "west", -60.0f, 0.0f },
+    };
+    for (auto const& d : kDirs)
+    {
+        float nx = bx + d.dx, ny = by + d.dy;
+        float nz = map->GetHeight(nx, ny, bz + 5.0f, true);
+        if (nz <= INVALID_HEIGHT) continue;
+        if (!pathable(nx, ny, nz)) continue;
+        out.push_back({ std::string("explore ") + d.name + " (60y)", nx, ny, nz });
+    }
+
+    return out;
 }
 
 static std::string BuildBotPrompt(Player* bot)
@@ -1304,8 +1596,42 @@ static std::string BuildBotPrompt(Player* bot)
 
     oss << GetCombatSummary(bot) << "\n\n";
 
+    // Destination candidates: computed here (world thread), stored for the
+    // reply-handling thread, and listed so the model knows what each index is.
+    {
+        std::vector<BotDestination> dests = BuildDestinationCandidates(bot);
+        {
+            std::lock_guard<std::mutex> lock(g_botDestinationsMutex);
+            g_botDestinations[bot->GetGUID().GetRawValue()] = dests;
+        }
+        if (!dests.empty())
+        {
+            oss << "MOVEMENT: to move, use command type \"move_to\" with params "
+                   "{\"destination_index\": N} choosing N from this list. These are the "
+                   "ONLY valid destinations; they are already verified reachable.\n";
+            for (size_t i = 0; i < dests.size(); ++i)
+            {
+                oss << " [" << i << "] " << dests[i].label << "\n";
+            }
+            oss << "\n";
+        }
+    }
+
     oss << "Your known spells:\n" << GetBotSpellInfo(bot) << "\n\n";
 
+    // The bot's own role, plus what that role means in group content. Combined
+    // with the per-member role tags above, this is what lets a five-bot party
+    // behave like a party instead of five independent actors.
+    oss << "Your group role: " << GroupRoleTag(bot) << "\n";
+    if (bot->GetGroup())
+    {
+        if (PlayerbotAI::IsTank(bot))
+            oss << "AS TANK: hold enemy attention, pull for the group, and keep enemies off healers and DPS.\n";
+        else if (PlayerbotAI::IsHeal(bot))
+            oss << "AS HEALER: keep group members alive. Prioritise the lowest HP% member. Heal before you attack.\n";
+        else
+            oss << "AS DPS: attack what the tank is fighting. Do not pull new enemies. Assist allies under attack.\n";
+    }
     oss << "Group status: " << botGroupStatus << "\n";
     if (!groupInfo.empty()) {
         oss << "Group members:\n";
@@ -1641,6 +1967,36 @@ namespace
         time_t lastRequest { 0 };
     };
     std::unordered_map<uint64_t, OllamaBotState> ollamaBotStates;
+
+    // Bots whose playerbots strategies we have cleared. Taking a bot over is
+    // destructive: ClearStrategies() wipes its combat/non-combat/dead strategy
+    // sets. Without tracking this we could never give them back, so a bot that
+    // was once LLM-driven would enter a battleground or dungeon permanently
+    // stripped of the AI that content depends on.
+    std::unordered_set<uint64_t> ollamaTakenOver;
+}
+
+// Hand a bot back to playerbots with its native strategies rebuilt.
+static void ReleaseBotToPlayerbots(Player* bot)
+{
+    if (!bot) return;
+    uint64_t guid = bot->GetGUID().GetRawValue();
+    if (!ollamaTakenOver.count(guid)) return;
+
+    if (PlayerbotAI* ai = PlayerbotsMgr::instance().GetPlayerbotAI(bot))
+    {
+        ai->ResetStrategies();
+
+        // Logged so a real battleground session produces evidence that the
+        // handoff fired, rather than us inferring it from a clean build.
+        LOG_INFO("playerbots", "[OllamaBotBuddy] Released '{}' back to playerbots AI (bg={} arena={} lfg={})",
+                 bot->GetName(),
+                 bot->InBattleground() ? 1 : 0,
+                 bot->InArena() ? 1 : 0,
+                 bot->inRandomLfgDungeon() ? 1 : 0);
+    }
+
+    ollamaTakenOver.erase(guid);
 }
 
 std::string EscapeBracesForFmt(const std::string& input) {
@@ -1662,14 +2018,104 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
 {
     if (!g_EnableOllamaBotControl) return;
 
+    // Idle gate: with nobody logged in there is no one to watch the bot, but the
+    // loop still issued an LLM request every few seconds. That pinned the model
+    // in memory (4.3GB on this host) and burned GPU continuously for no benefit.
+    //
+    // Bots keep playing normally via playerbots AI while this is skipped; only
+    // the LLM layer pauses, and it resumes the moment a real player logs in.
+    {
+        bool anyRealPlayer = false;
+        for (auto const& itr : ObjectAccessor::GetPlayers())
+        {
+            Player* p = itr.second;
+            if (!p || !p->IsInWorld()) continue;
+            // WorldSession::IsBot() is set at session creation, so it is correct
+            // even during the window where a bot has logged in but its
+            // PlayerbotAI is not yet attached. Testing GetPlayerbotAI() alone
+            // briefly misidentified logging-in bots as real players, which was
+            // enough to wake the LLM and pin the model in memory.
+            if (p->GetSession() && !p->GetSession()->IsBot()) { anyRealPlayer = true; break; }
+        }
+        if (!anyRealPlayer) return;
+    }
+
     for (auto const& itr : ObjectAccessor::GetPlayers())
     {
         Player* bot = itr.second;
         if (!bot->IsInWorld()) continue;
         std::string botName = bot->GetName();
 
-        // Temporary marker for testing
-        if (botName != "Ollamatest") continue;
+        // Which bots the LLM drives.
+        //
+        // This was a hardcoded name check ("Ollamatest"), marked by the author as
+        // a temporary testing marker. It made group content impossible: a dungeon
+        // needs a party of AI-driven bots, not one.
+        //
+        // ControlPartyBots is the useful default for dungeons and raids: the LLM
+        // drives exactly the bots grouped with a real player, while the other
+        // hundreds of world bots keep using normal (cheap) playerbots AI. That
+        // keeps LLM cost proportional to the party you are actually playing with.
+        {
+            bool selected = false;
+
+            if (!g_OllamaBotNames.empty())
+            {
+                std::stringstream namesStream(g_OllamaBotNames);
+                std::string entry;
+                while (std::getline(namesStream, entry, ','))
+                {
+                    entry.erase(0, entry.find_first_not_of(" \t"));
+                    entry.erase(entry.find_last_not_of(" \t") + 1);
+                    if (!entry.empty() && entry == botName) { selected = true; break; }
+                }
+            }
+
+            if (!selected && g_OllamaControlParty)
+            {
+                if (Group* grp = bot->GetGroup())
+                {
+                    for (GroupReference* ref = grp->GetFirstMember(); ref; ref = ref->next())
+                    {
+                        Player* member = ref->GetSource();
+                        // A real player is one with no playerbot AI attached.
+                        if (member && !PlayerbotsMgr::instance().GetPlayerbotAI(member))
+                        {
+                            selected = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!selected)
+            {
+                // No longer eligible (left the party, or names list changed).
+                ReleaseBotToPlayerbots(bot);
+                continue;
+            }
+        }
+
+        // Do not take over bots inside battlegrounds, arenas or LFG dungeons.
+        //
+        // The takeover below clears every playerbots strategy. Inside a
+        // battleground that destroys the whole BG tactics layer ("bg tactics",
+        // "bg role", "bg select objective", "protect fc", "attack enemy flag
+        // carrier"), which is purpose-built, well tested, and far better at
+        // capturing flags and holding objectives than a generic LLM issuing one
+        // movement command every few seconds.
+        //
+        // The same applies to instanced PvE: clearing strategies also removes
+        // "tank"/"tank assist"/"dps assist"/"cc"/"aoe" and the threat handling
+        // that keeps a dungeon group alive.
+        if (bot->InBattleground() || bot->InArena() || bot->inRandomLfgDungeon() ||
+            bot->InBattlegroundQueue())
+        {
+            // Give the bot its native AI back on the way in, otherwise it fights
+            // the battleground with whatever we left it holding.
+            ReleaseBotToPlayerbots(bot);
+            continue;
+        }
 
         // Clear the normal Playerbot AI
         PlayerbotAI* ai = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
@@ -1678,6 +2124,7 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             ai->ClearStrategies(BOT_STATE_COMBAT);
             ai->ClearStrategies(BOT_STATE_NON_COMBAT);
             ai->ClearStrategies(BOT_STATE_DEAD);
+            ollamaTakenOver.insert(bot->GetGUID().GetRawValue());
         } else {
             continue;
         }
@@ -1685,21 +2132,32 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
         uint64_t guid = bot->GetGUID().GetRawValue();
         OllamaBotState& state = ollamaBotStates[guid];
 
-        // Only process if not already waiting for LLM
-        if (!state.busy)
+        // Only process if not already waiting for LLM, and not more often than
+        // the configured interval. lastRequest was previously recorded but never
+        // checked, so bots re-queried as fast as Ollama could answer.
+        time_t now = time(nullptr);
+        if (!state.busy && (now - state.lastRequest) >= static_cast<time_t>(g_OllamaDecisionInterval))
         {
             state.busy = true;
             state.lastRequest = time(nullptr);
 
             std::string prompt = BuildBotPrompt(bot);
+            // Built here, on the world thread, because it reads the bot's map.
+            size_t destCount = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_botDestinationsMutex);
+                auto it = g_botDestinations.find(bot->GetGUID().GetRawValue());
+                if (it != g_botDestinations.end()) destCount = it->second.size();
+            }
+            nlohmann::json actionSchema = BuildBotActionSchema(bot, destCount);
 
             if (g_EnableOllamaBotBuddyDebug)
             {
                 //LOG_INFO("server.loading", "[OllamaBotBuddy] Sending prompt for bot '{}': {}", botName, prompt);
             }
 
-            std::thread([bot, guid, prompt]() {
-                std::string llmReply = QueryOllamaLLM(prompt);
+            std::thread([bot, guid, prompt, actionSchema]() {
+                std::string llmReply = QueryOllamaLLM(prompt, actionSchema);
 
                 if (g_EnableOllamaBotBuddyDebug)
                 {
