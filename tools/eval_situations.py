@@ -1,11 +1,34 @@
+#!/usr/bin/env python3
+"""Replay captured bot prompts, injecting one situation at a time.
+
+Measures whether an instruction is actually followed when buried in a real
+~24,000 character prompt, and compares placing the situation block at the end of
+the prompt versus the top. See docs/PROMPT-EVALS.md.
+
+Usage:
+    python3 tools/eval_situations.py CAPTURE.jsonl [CAPTURE2.jsonl ...] \
+        [--bases N] [--samples N]
+
+CAPTURE files are produced by tools/capture_prompts.py.
+"""
 import json,re,urllib.request,sys
 from collections import Counter
-B="/private/tmp/claude-501/-Users-justinc-code/340c6ab3-0f23-48e9-9305-1d102224742c/scratchpad/"
+
+args=[a for a in sys.argv[1:] if not a.startswith("--")]
+opts={a.split("=")[0]:a.split("=")[1] for a in sys.argv[1:] if a.startswith("--") and "=" in a}
+if not args:
+    print(__doc__); sys.exit(2)
 recs=[]
-for f in ("cap4.jsonl","cap3.jsonl"):
-    try: recs+=[json.loads(l) for l in open(B+f)]
-    except Exception: pass
+for f in args:
+    try:
+        recs+=[json.loads(l) for l in open(f)]
+    except Exception as e:
+        print(f"could not read {f}: {e}"); sys.exit(2)
 base=[r["prompt"] for r in recs if r.get("prompt")]
+if not base:
+    print("no prompts found in the capture files"); sys.exit(2)
+MODEL=opts.get("--model","qwen2.5:7b-instruct")
+URL=opts.get("--url","http://127.0.0.1:11434/api/generate")
 SITBLK=r'(?m)^SITUATION:.*(?:\n(?!\n).*)*\n?'
 def strip_sit(p): return re.sub(SITBLK,'',p)
 def guids(p): return sorted({int(x) for x in re.findall(r'\(guid:?\s*(\d+)',p)}) or [1]
@@ -38,14 +61,14 @@ def schema_for(p):
     return {"type":"object","properties":{"steps":{"type":"array","minItems":1,"maxItems":4,
             "items":{"oneOf":v}}},"required":["steps"]}
 def call(p,sch):
-    b={"model":"qwen2.5:7b-instruct","prompt":p,"stream":False,"format":sch,"keep_alive":"10m",
+    b={"model":MODEL,"prompt":p,"stream":False,"format":sch,"keep_alive":"10m",
        "options":{"num_predict":200,"temperature":0.2}}
     d=json.load(urllib.request.urlopen(urllib.request.Request(
-        "http://127.0.0.1:11434/api/generate",data=json.dumps(b).encode(),
+        URL,data=json.dumps(b).encode(),
         headers={"Content-Type":"application/json"}),timeout=600))
     return json.loads(d["response"])
-NB=int(sys.argv[1]) if len(sys.argv)>1 else 4
-NS=int(sys.argv[2]) if len(sys.argv)>2 else 3
+NB=int(opts.get("--bases",4))
+NS=int(opts.get("--samples",3))
 bases=base[:NB]
 print(f"base prompts: {len(bases)}  (median {sorted(len(b) for b in bases)[len(bases)//2]} chars)  samples each: {NS}\n")
 print(f"{'situation':<22}{'END (shipped)':>16}{'TOP (old)':>14}   notes")
