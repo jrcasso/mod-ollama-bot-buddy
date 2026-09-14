@@ -2930,6 +2930,16 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
         // on most ticks.
         ApplyHumanMovement(bot);
 
+        // Nothing in the command vocabulary works while dead: there is no
+        // release, no corpse run, no revive. Hand the bot back to playerbots,
+        // which has a dead-state strategy for exactly this, and stop paying for
+        // inference that can only produce impossible commands.
+        if (!bot->IsAlive())
+        {
+            ReleaseBotToPlayerbots(bot);
+            continue;
+        }
+
         std::string botName = bot->GetName();
 
         // Which bots the LLM drives.
@@ -3018,8 +3028,12 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
         PlayerbotAI* ai = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
         if (ai)
         {
+            // Only the non-combat brain. BOT_STATE_COMBAT holds the rotation and
+            // BOT_STATE_DEAD holds the "dead" strategy that releases and runs
+            // back to the corpse. Clearing either left the bot with no way to
+            // fight or no way to resurrect, while the LLM kept issuing commands
+            // that a corpse or a strategy-less engine cannot carry out.
             ai->ClearStrategies(BOT_STATE_NON_COMBAT);
-            ai->ClearStrategies(BOT_STATE_DEAD);
             ollamaTakenOver.insert(bot->GetGUID().GetRawValue());
         } else {
             continue;
