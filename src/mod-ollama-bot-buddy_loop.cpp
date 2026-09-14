@@ -2941,11 +2941,21 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             continue;
         }
 
-        // Clear the normal Playerbot AI
+        // Take over the non-combat brain only.
+        //
+        // BOT_STATE_COMBAT is deliberately left alone. The attack handler ends
+        // with ChangeEngine(BOT_STATE_COMBAT), handing the fight to playerbots'
+        // rotation -- but clearing that state first left it with no strategies
+        // to run, so an LLM-driven bot auto-attacked with a full spellbook and
+        // 100 rage. Measured: the model chose plain "attack" 8/8 in a fight
+        // where Shield Slam was named as its strongest option, because issuing
+        // abilities was never its job.
+        //
+        // Same division as battlegrounds: the LLM decides what to do and where
+        // to go, playerbots decides how to fight.
         PlayerbotAI* ai = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
         if (ai)
         {
-            ai->ClearStrategies(BOT_STATE_COMBAT);
             ai->ClearStrategies(BOT_STATE_NON_COMBAT);
             ai->ClearStrategies(BOT_STATE_DEAD);
             ollamaTakenOver.insert(bot->GetGUID().GetRawValue());
