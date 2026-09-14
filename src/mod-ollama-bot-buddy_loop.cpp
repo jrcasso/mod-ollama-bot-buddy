@@ -2021,8 +2021,35 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
             }
         }
 
+        // Does it actually have a quest this bot could accept right now?
+        //
+        // IsQuestGiver() is only the permanent NPC flag: every quest giver in the
+        // world carries it forever, whether or not it has anything left for this
+        // particular bot. Announcing one as "a quest giver already within reach"
+        // on that basis alone promises something the executor will refuse --
+        // InteractWithQuestGiver() accepts a quest only when the status is
+        // QUEST_STATUS_NONE and both CanTakeQuest and CanAddQuest pass, and
+        // otherwise falls through to gossip and returns false, which surfaces to
+        // the bot as "interact did not execute".
+        //
+        // The conditions below deliberately mirror InteractWithQuestGiver so the
+        // situation assessment and the code that carries it out agree.
+        bool hasOffer = false;
+        QuestRelationBounds offers = sObjectMgr->GetCreatureQuestRelationBounds(c->GetEntry());
+        for (auto itr = offers.first; itr != offers.second; ++itr)
+        {
+            Quest const* quest = sObjectMgr->GetQuestTemplate(itr->second);
+            if (!quest) continue;
+            if (bot->GetQuestStatus(itr->second) != QUEST_STATUS_NONE) continue;
+            if (bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+            {
+                hasOffer = true;
+                break;
+            }
+        }
+
         if (hasTurnIn && dist < turnInDist) { nearestTurnIn = c; turnInDist = dist; }
-        else if (!hasTurnIn && dist < nearestDist) { nearestQuestGiver = c; nearestDist = dist; }
+        else if (!hasTurnIn && hasOffer && dist < nearestDist) { nearestQuestGiver = c; nearestDist = dist; }
     }
 
     if (nearestLoot)
