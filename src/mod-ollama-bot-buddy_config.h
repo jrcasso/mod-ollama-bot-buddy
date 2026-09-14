@@ -15,6 +15,10 @@ extern bool        g_OllamaControlParty;  // drive any bot grouped with a real p
 // re-queries the instant the previous reply lands, so a 5-bot dungeon party
 // saturates the GPU and every bot's decisions get slower.
 extern uint32      g_OllamaDecisionInterval;
+// Gate LLM work on a real player being online. On by default: with nobody
+// playing there is no one to watch the bots, and the model stays resident in
+// memory for nothing. Turn off to exercise the loop without logging in.
+extern bool        g_OllamaRequirePlayerOnline;
 
 class OllamaBotControlConfigWorldScript : public WorldScript
 {

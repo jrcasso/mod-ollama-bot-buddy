@@ -2917,7 +2917,7 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             // enough to wake the LLM and pin the model in memory.
             if (p->GetSession() && !p->GetSession()->IsBot()) { anyRealPlayer = true; break; }
         }
-        if (!anyRealPlayer) return;
+        if (!anyRealPlayer && g_OllamaRequirePlayerOnline) return;
     }
 
     for (auto const& itr : ObjectAccessor::GetPlayers())
@@ -3035,6 +3035,32 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             // that a corpse or a strategy-less engine cannot carry out.
             ai->ClearStrategies(BOT_STATE_NON_COMBAT);
             ollamaTakenOver.insert(bot->GetGUID().GetRawValue());
+
+            // One-shot proof that the combat and dead brains actually survive
+            // the takeover. Both were being wiped before, leaving bots to
+            // auto-attack with a full spellbook and to stay dead permanently.
+            // Logged once per bot so a real session shows what it really has.
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                static std::unordered_set<uint64_t> logged;
+                uint64_t lk = bot->GetGUID().GetRawValue();
+                if (!logged.count(lk))
+                {
+                    logged.insert(lk);
+                    auto join = [](std::vector<std::string> const& v)
+                    {
+                        std::string out;
+                        for (auto const& x : v) { if (!out.empty()) out += ","; out += x; }
+                        return out.empty() ? std::string("(none)") : out;
+                    };
+                    LOG_INFO("server.loading",
+                             "[OllamaBotBuddy] takeover '{}' combat=[{}] dead=[{}] noncombat=[{}]",
+                             bot->GetName(),
+                             join(ai->GetStrategies(BOT_STATE_COMBAT)),
+                             join(ai->GetStrategies(BOT_STATE_DEAD)),
+                             join(ai->GetStrategies(BOT_STATE_NON_COMBAT)));
+                }
+            }
         } else {
             continue;
         }
