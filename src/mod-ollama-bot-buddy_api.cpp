@@ -594,14 +594,41 @@ namespace BotBuddyAI
 
     bool Say(Player* bot, const std::string& msg)
     {
-        if (!bot) return false;
-        
+        if (!bot || msg.empty()) return false;
+
         PlayerbotAI* ai = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
         if (!ai) return false;
-        
-        // Use the bot's AI system to handle saying
-        Event event = Event("", msg);
-        return ai->DoSpecificAction("say", event);
+
+        // This used to be:
+        //
+        //     Event event = Event("", msg);
+        //     return ai->DoSpecificAction("say", event);
+        //
+        // which threw the message away. SayAction::Execute is declared
+        // `Execute(Event /*event*/)` -- the parameter is commented out and never
+        // read. That action exists to emit canned playerbot chatter selected by a
+        // qualifier ("low ammo" and friends) from sPlayerbotTextMgr; it has no
+        // mechanism for arbitrary text. So every line the model generated was
+        // discarded, silently, and the bot said either nothing or something
+        // unrelated.
+        //
+        // That mattered more than any other instance of this bug class, because
+        // speech is the one thing the LLM measurably does here that no rule could
+        // (docs/PERSONAS.md): personality changes what a bot says and nothing
+        // about what it does. The generated text was the whole justification for
+        // the inference call, and it was being dropped on the floor.
+        //
+        // PlayerbotAI::Say is the API for this, and it is what mod-ollama-chat
+        // uses. It picks the faction language and calls Player::Say.
+        bool const said = ai->Say(msg);
+
+        if (g_EnableOllamaBotBuddyDebug)
+        {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] {} says: {}",
+                     bot->GetName(), EscapeBracesForFmt(msg));
+        }
+
+        return said;
     }
 
     bool FollowMaster(Player* bot)

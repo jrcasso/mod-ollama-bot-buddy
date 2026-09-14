@@ -54,3 +54,48 @@ notices. Do not remove the block on the grounds that it fails to steer actions.
 * Correctness directives are safe from persona interference, which is worth
   knowing: an EDGE_LORD will not wander off to fight something bigger instead of
   defending itself.
+
+## Speech was being discarded entirely (iteration 38)
+
+Everything above was measured by replaying prompts and reading the model's `say`
+field. None of it was reaching the game.
+
+`BotBuddyAI::Say` called `ai->DoSpecificAction("say", Event("", msg))`, and
+`SayAction::Execute` is declared
+
+    bool SayAction::Execute(Event /*event*/)
+
+with the parameter commented out. That action emits canned playerbot chatter
+chosen by a qualifier ("low ammo" and similar) from `sPlayerbotTextMgr`; it has no
+path for arbitrary text. So every line the model produced was dropped.
+
+This is the same failure as `AcceptQuest`: delegating to a playerbot action that
+cannot do the job, and not checking the result. It mattered more, because speech
+is the only thing the LLM measurably contributes here.
+
+Fixed by calling `PlayerbotAI::Say`, which selects the faction language and calls
+`Player::Say`. It is what mod-ollama-chat already uses. Verified with 12 bots over
+eight minutes: 88 lines spoken against 89 LLM replies.
+
+## The text itself is poor, which is now the open problem
+
+With speech actually reaching the game, the quality is visible for the first time:
+
+    Trumzogg says: Checking if there are any quests available.
+    Naspioshis says: Checking if there are any quests available.
+    Sylrin says: Checking if there are any quests available.
+    Emian says: Checking if there are any quests available.
+
+Three faults, all separate from the plumbing:
+
+1. **It narrates the action rather than speaking.** The prompt asks for "what your
+   character would say in-game to players" and gets a status report instead.
+2. **It is homogeneous.** The persona differences measured above do not survive
+   into production speech, plausibly because the weighting is deliberately ~72%
+   ordinary dispositions, whose voices are bland by design.
+3. **It is constant.** 88 lines from 89 decisions. Players do not announce every
+   action, and a party of bots narrating each other's quest-giver clicks would be
+   worse than silence.
+
+Fixing the wording, the rate, and the persona carry-through are prompt changes and
+should be measured separately against captured prompts, one at a time.
