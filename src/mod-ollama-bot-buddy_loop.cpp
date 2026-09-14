@@ -1890,6 +1890,61 @@ static std::string GetBotPersonalityKey(Player* bot)
         key = (*result)[0].Get<std::string>();
     }
 
+    // Fall back to a stable, GUID-derived disposition.
+    //
+    // mod-ollama-chat writes that table lazily, only once a bot actually says
+    // something, and bots rarely say anything: measured on the live server there
+    // were 18 rows for 1,501 characters, so about 99% of bots reached the prompt
+    // with no disposition at all and the whole block was skipped.
+    //
+    // Deriving it from the GUID instead means every bot has one, it is stable
+    // across restarts and needs no write, and the mix is a deliberate choice
+    // rather than a side effect of who happened to talk. A bot that does have a
+    // chat personality keeps it, so speech and behaviour stay consistent.
+    //
+    // The weights are the point: a server should read as mostly ordinary people
+    // with the occasional memorable one, not a cast of characters. Roughly 70%
+    // unremarkable, 20% mildly distinctive, 10% actively disruptive. Roleplay
+    // personas are deliberately excluded.
+    if (key.empty())
+    {
+        struct Weighted { char const* key; uint32 weight; };
+        static const Weighted kDispositions[] = {
+            // Ordinary players getting on with the game (~70%).
+            { "CASUAL",          18 },
+            { "GAMER",           14 },
+            { "GRUMPY_VETERAN",  12 },
+            { "RAIDER",          10 },
+            { "LONE_WOLF",        8 },
+            { "SCHOLAR",          8 },
+            // Mildly distinctive, noticeable but not a problem (~20%).
+            { "TRICKSTER",        7 },
+            { "ELITIST",          6 },
+            { "STONER",           5 },
+            { "PARANOID",         2 },
+            // Genuinely disruptive, deliberately rare (~10%).
+            { "EDGE_LORD",        3 },
+            { "NINJA_LOOTER",     3 },
+            { "RAGER",            2 },
+            { "AFK_LEECH",        1 },
+            { "FOOL",             1 },
+        };
+
+        uint32 total = 0;
+        for (auto const& d : kDispositions) total += d.weight;
+
+        // Mix the guid so neighbouring spawn ids do not land on the same bucket.
+        uint64_t h = raw * 0x9E3779B97F4A7C15ull;
+        h ^= (h >> 31);
+        uint32 roll = uint32(h % total);
+
+        for (auto const& d : kDispositions)
+        {
+            if (roll < d.weight) { key = d.key; break; }
+            roll -= d.weight;
+        }
+    }
+
     std::lock_guard<std::mutex> lock(g_botPersonalityMutex);
     g_botPersonalityCache[raw] = key;
     g_botPersonalityLoaded.insert(raw);
