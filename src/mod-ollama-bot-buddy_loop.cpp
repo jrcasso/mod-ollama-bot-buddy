@@ -102,6 +102,44 @@ struct BotDestination
 static std::unordered_map<uint64_t, std::vector<BotDestination>> g_botDestinations;
 static std::mutex g_botDestinationsMutex;
 
+// Candidate lists are expensive: each exploration point costs a PathGenerator
+// run, so rebuilding on every prompt meant several pathfinds per bot per
+// decision. They only go stale when the bot actually moves, so cache them and
+// rebuild on movement or after a short interval.
+struct BotDestinationCacheEntry
+{
+    uint32 builtAtMs { 0 };
+    float  x { 0.0f }, y { 0.0f }, z { 0.0f };
+};
+static std::unordered_map<uint64_t, BotDestinationCacheEntry> g_botDestinationsMeta;
+
+// Why the bot's last action failed, fed back into the next prompt.
+//
+// The parser already returned a bool, but the model was never told anything: it
+// could not tell "that target is out of range" from "there is no path there"
+// from "that guid does not exist", so it re-planned blind and often re-issued
+// the same impossible action. One line of grounded feedback lets it adapt.
+static std::unordered_map<uint64_t, std::string> g_lastActionOutcome;
+static std::mutex g_lastActionOutcomeMutex;
+
+static void RecordActionOutcome(Player* bot, std::string const& outcome)
+{
+    if (!bot) return;
+    std::lock_guard<std::mutex> lock(g_lastActionOutcomeMutex);
+    if (outcome.empty())
+        g_lastActionOutcome.erase(bot->GetGUID().GetRawValue());
+    else
+        g_lastActionOutcome[bot->GetGUID().GetRawValue()] = outcome;
+}
+
+static std::string GetActionOutcome(Player* bot)
+{
+    if (!bot) return "";
+    std::lock_guard<std::mutex> lock(g_lastActionOutcomeMutex);
+    auto it = g_lastActionOutcome.find(bot->GetGUID().GetRawValue());
+    return it == g_lastActionOutcome.end() ? std::string() : it->second;
+}
+
 bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
 {
     try
@@ -150,6 +188,7 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
                 if (!found)
                 {
                     LOG_DEBUG("server.loading", "[OllamaBotBuddy] destination_index {} out of range", idx);
+                    RecordActionOutcome(bot, fmt::format("move_to failed: destination_index {} is not in the current list", idx));
                     return false;
                 }
                 // Falls through to the shared dispatch below so `say` and
@@ -181,6 +220,7 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
                 if (distanceFromBot > maxDistanceFromBot) {
                     LOG_DEBUG("server.loading", "[OllamaBotBuddy] Move_to destination too far from bot: ({}, {}, {}) - Distance: {:.1f}", 
                              destX, destY, destZ, distanceFromBot);
+                    RecordActionOutcome(bot, fmt::format("move_to failed: that point is {:.0f} yards away, too far to travel in one move", distanceFromBot));
                     return false;
                 }
                 
@@ -193,6 +233,7 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
                 if (pathType & PATHFIND_NOPATH) {
                     LOG_DEBUG("server.loading", "[OllamaBotBuddy] No valid path for move_to: ({}, {}, {}) - PathType: {}", 
                              destX, destY, destZ, pathType);
+                    RecordActionOutcome(bot, "move_to failed: no walkable path to that point. Choose a listed destination instead");
                     return false; // Only reject if completely impossible to path
                 }
                 
@@ -249,6 +290,7 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
                 
                 if (!validTarget) {
                     LOG_ERROR("server.loading", "[OllamaBotBuddy] Invalid or unreachable attack target with guid: {} - Target not found in visible creatures/players", targetGuid);
+                    RecordActionOutcome(bot, fmt::format("attack failed: guid {} is not a visible, attackable target", targetGuid));
                     
                     // Debug: List available creature GUIDs for debugging
                     if (g_EnableOllamaBotBuddyDebug) {
@@ -336,10 +378,16 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
         else
         {
             LOG_ERROR("server.loading", "[OllamaBotBuddy] Unknown command type '{}'", type);
+            RecordActionOutcome(bot, fmt::format("'{}' is not a valid command type", type));
             return false;
         }
 
         bool result = HandleBotControlCommand(bot, command);
+
+        if (result)
+            RecordActionOutcome(bot, "");   // success: clear any stale failure
+        else
+            RecordActionOutcome(bot, fmt::format("{} did not execute", type));
 
         if (!sayMsg.empty())
             BotBuddyAI::Say(bot, sayMsg);
@@ -447,6 +495,20 @@ std::vector<std::string> GetGroupStatus(Player* bot)
 
 std::string GetBotSpellInfo(Player* bot)
 {
+    // Keep only the highest known rank of each spell.
+    //
+    // A bot knows every rank it ever learned, and the raw spell map listed all
+    // of them: three entries for Shield Slam, two for Revenge, and so on. That
+    // is pure prompt bloat -- the model never wants rank 3 of something it has
+    // rank 9 of -- and the spell list is the single largest section of a
+    // ~2000 token prompt paid once per bot per decision.
+    struct RankedSpell
+    {
+        uint32      id;
+        uint32      rank;
+        std::string line;
+    };
+    std::unordered_map<std::string, RankedSpell> bestByName;
     std::ostringstream spellSummary;
 
     for (const auto& spellPair : bot->GetSpellMap())
@@ -505,9 +567,20 @@ std::string GetBotSpellInfo(Player* bot)
             costText = "no cost";
         }
         
-        spellSummary << "**" << name << "** (ID: " << spellId << ") - " << effectText << ", Costs " << costText << ".\n";
+        std::ostringstream line;
+        line << "**" << name << "** (ID: " << spellId << ") - " << effectText << ", Costs " << costText << ".";
 
+        // sSpellMgr ranks are 1-based; 0 means unranked, which we treat as a
+        // single-rank spell that always wins its own name.
+        uint32 rank = sSpellMgr->GetSpellRank(spellId);
+
+        auto existing = bestByName.find(name);
+        if (existing == bestByName.end() || rank > existing->second.rank)
+            bestByName[name] = { spellId, rank, line.str() };
     }
+
+    for (auto const& entry : bestByName)
+        spellSummary << entry.second.line << "\n";
 
     return spellSummary.str();
 }
@@ -1567,6 +1640,98 @@ static std::vector<BotDestination> BuildDestinationCandidates(Player* bot, float
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Personality-driven decisions.
+//
+// mod-ollama-chat assigns each bot a personality and stores it in
+// mod_ollama_chat_personality. Its templates only shape speech ("Talk about
+// rare loot"), so on their own a bot sounds like a loot goblin while behaving
+// identically to everyone else.
+//
+// We read the same assignment -- one source of truth, no second personality
+// system -- and translate it into directives for the action prompt. The chat
+// module keeps owning what a bot says; this decides what that disposition
+// means for what it does.
+// ---------------------------------------------------------------------------
+static std::string ActionTraitsFor(std::string const& key)
+{
+    // Only personalities with a genuine behavioural reading are mapped. A bard
+    // rhyming does not imply anything about target selection, and inventing a
+    // meaning would just add noise to the prompt.
+    static std::unordered_map<std::string, std::string> const kTraits =
+    {
+        {"LOOTGOBLIN",     "Loot every lootable corpse before anything else. Prefer chests and containers over combat."},
+        {"GOBLIN_MERCHANT","Prioritise loot, chests and anything sellable. Avoid fights that offer no profit."},
+        {"TRADER",         "Favour gathering and looting over combat; value anything that can be sold."},
+        {"GAMER",          "Play efficiently: pick the fastest route to the objective and avoid wasted actions."},
+        {"RAIDER",         "Stay with the group, focus the target others are on, and avoid pulling extra enemies."},
+        {"PVP_HARDCORE",   "Prefer attacking enemy players over creatures. Engage aggressively when one is visible."},
+        {"HEROIC_LEADER",  "Lead from the front. Engage first and defend any group member under attack."},
+        {"FANATIC",        "Attack faction enemies on sight, even at unfavourable odds."},
+        {"RAGER",          "Attack aggressively and refuse to retreat, even when badly hurt."},
+        {"EDGE_LORD",      "Seek out the strongest enemy available and fight it alone."},
+        {"WANNABE_VILLAIN","Pick fights you can win for show, and take credit by looting the spoils."},
+        {"LONE_WOLF",      "Keep away from other players. Avoid grouping and fight alone."},
+        {"PARANOID",       "Assume nearby players will steal your kills and loot. Grab loot first and retreat early."},
+        {"CONSPIRACY_THEORIST","Behave erratically: change target or destination often for no clear reason."},
+        {"GLITCHED_AI",    "Behave erratically: abandon actions partway and switch to unrelated ones."},
+        {"FOOL",           "Frequently pick a poor target or destination. Forget to loot. Wander off mid-task."},
+        {"YOUNG_APPRENTICE","Stay near other players and copy what they are doing. Avoid dangerous fights."},
+        {"MENTOR",         "Prioritise helping group members over your own progress."},
+        {"CASUAL",         "Prefer questing and exploring over grinding. Do not seek out hard fights."},
+        {"STONER",         "Act slowly and without urgency. Wander and explore rather than pursuing goals."},
+        {"GRUMPY_VETERAN", "Avoid unnecessary risk. Take the efficient, well-trodden option every time."},
+        {"SCHOLAR",        "Investigate: prefer interacting with objects and quest givers over combat."},
+        {"NPC_IMPERSONATOR","Prefer quest givers and quest objectives over open combat."},
+        {"PIRATE",         "Chase loot and plunder. Attack for spoils rather than for objectives."},
+        {"HYPE_MAN",       "Stay close to group members and join whatever fight they are already in."},
+        {"FLIRT",          "Stay near other players rather than going off alone."},
+        {"TRICKSTER",      "Prefer opportunistic targets: wounded enemies and ones others are already fighting."},
+
+        // Realistic player archetypes rather than roleplay personas: the things
+        // that actually make a server feel populated by people.
+        {"NINJA_LOOTER",   "Loot everything immediately, including corpses others fought for. Never wait your turn."},
+        {"ELITIST",        "Only engage fights worth your time. Ignore weak enemies and do not help with trivial tasks."},
+        {"AFK_LEECH",      "Act slowly and do the minimum. Follow others rather than choosing your own targets."},
+        {"DRAMA_QUEEN",    "Retreat at the first sign of damage and make it obvious. Prefer visible actions over useful ones."},
+        {"SWEATY_TRYHARD", "Take the most efficient action every time. Never waste a step or attack a low-value target."},
+        {"CHATTERBOX",     "Prefer staying near other players over pursuing your own objectives."},
+    };
+
+    auto it = kTraits.find(key);
+    return it == kTraits.end() ? std::string() : it->second;
+}
+
+// Assigned personality per bot, loaded once per server run.
+static std::unordered_map<uint64_t, std::string> g_botPersonalityCache;
+static std::unordered_set<uint64_t> g_botPersonalityLoaded;
+static std::mutex g_botPersonalityMutex;
+
+static std::string GetBotPersonalityKey(Player* bot)
+{
+    if (!bot) return "";
+    uint64_t raw = bot->GetGUID().GetRawValue();
+
+    {
+        std::lock_guard<std::mutex> lock(g_botPersonalityMutex);
+        if (g_botPersonalityLoaded.count(raw))
+            return g_botPersonalityCache[raw];
+    }
+
+    std::string key;
+    if (QueryResult result = CharacterDatabase.Query(
+            "SELECT personality FROM mod_ollama_chat_personality WHERE guid = {}",
+            bot->GetGUID().GetCounter()))
+    {
+        key = (*result)[0].Get<std::string>();
+    }
+
+    std::lock_guard<std::mutex> lock(g_botPersonalityMutex);
+    g_botPersonalityCache[raw] = key;
+    g_botPersonalityLoaded.insert(raw);
+    return key;
+}
+
 static std::string BuildBotPrompt(Player* bot)
 {
     PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
@@ -1607,13 +1772,73 @@ static std::string BuildBotPrompt(Player* bot)
 
     oss << GetCombatSummary(bot) << "\n\n";
 
+    // Result of the previous action. Placed before the command history so the
+    // model reads the failure and its cause together, rather than seeing a
+    // command it issued with no indication that it did not work.
+    {
+        std::string outcome = GetActionOutcome(bot);
+        if (!outcome.empty())
+        {
+            oss << "YOUR LAST ACTION FAILED: " << outcome << "\n";
+            oss << "Do not repeat it unchanged. Pick a different action or target.\n\n";
+        }
+    }
+
+    // Personality, sourced from mod-ollama-chat's assignment so speech and
+    // behaviour come from the same disposition.
+    {
+        std::string personalityKey = GetBotPersonalityKey(bot);
+        if (!personalityKey.empty())
+        {
+            std::string traits = ActionTraitsFor(personalityKey);
+            oss << "YOUR PERSONALITY: " << personalityKey << "\n";
+            if (!traits.empty())
+            {
+                oss << "This shapes how you act, not just how you talk:\n";
+                oss << " - " << traits << "\n";
+            }
+            oss << "\n";
+        }
+    }
+
     // Destination candidates: computed here (world thread), stored for the
     // reply-handling thread, and listed so the model knows what each index is.
     {
-        std::vector<BotDestination> dests = BuildDestinationCandidates(bot);
+        uint64_t destKey = bot->GetGUID().GetRawValue();
+        std::vector<BotDestination> dests;
+
+        // Reuse while the bot is within 15 yards of where the list was built and
+        // it is under 10 seconds old. Beyond either, the visible objects and
+        // reachable points have genuinely changed.
+        constexpr uint32 kDestTtlMs = 10000;
+        constexpr float  kDestMoveTolerance = 15.0f;
+
+        bool rebuild = true;
         {
             std::lock_guard<std::mutex> lock(g_botDestinationsMutex);
-            g_botDestinations[bot->GetGUID().GetRawValue()] = dests;
+            auto metaIt = g_botDestinationsMeta.find(destKey);
+            auto listIt = g_botDestinations.find(destKey);
+
+            if (metaIt != g_botDestinationsMeta.end() && listIt != g_botDestinations.end() &&
+                getMSTimeDiff(metaIt->second.builtAtMs, getMSTime()) < kDestTtlMs)
+            {
+                float dx = bot->GetPositionX() - metaIt->second.x;
+                float dy = bot->GetPositionY() - metaIt->second.y;
+                float dz = bot->GetPositionZ() - metaIt->second.z;
+                if ((dx * dx + dy * dy + dz * dz) < (kDestMoveTolerance * kDestMoveTolerance))
+                {
+                    dests = listIt->second;
+                    rebuild = false;
+                }
+            }
+        }
+
+        if (rebuild)
+        {
+            dests = BuildDestinationCandidates(bot);
+            std::lock_guard<std::mutex> lock(g_botDestinationsMutex);
+            g_botDestinations[destKey] = dests;
+            g_botDestinationsMeta[destKey] = { getMSTime(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ() };
         }
         if (!dests.empty())
         {
@@ -2092,9 +2317,194 @@ static void FireLlmRequest(Player* bot, uint64_t guid, OllamaBotState& state)
     }).detach();
 }
 
+// ---------------------------------------------------------------------------
+// Human movement quirks.
+//
+// Bots path in dead straight lines and stand perfectly still, which is the
+// single most obvious tell that a character is not a person. Real players
+// bunny-hop while waiting, spin on the spot, and fidget with their facing.
+//
+// Two rules keep this safe:
+//   * Only fires while the bot is idle (no active movement generator). Jumping
+//     mid-path would call MotionMaster::Clear() and cancel whatever the bot was
+//     actually doing.
+//   * Never fires in combat, or in instanced content where positioning matters.
+//
+// Each bot gets a fixed quirk profile hashed from its guid, so an individual
+// bot is consistently fidgety or consistently still rather than everyone
+// behaving identically.
+// ---------------------------------------------------------------------------
+namespace
+{
+    struct HumanQuirk
+    {
+        uint8 hopChance;    // percent, per opportunity
+        uint8 spinChance;
+        uint8 glanceChance;
+        uint8 emoteChance;
+        uint32 minGapMs;    // personal rhythm, so they do not sync up
+    };
+
+    HumanQuirk QuirkFor(Player* bot)
+    {
+        uint32 seed = bot ? bot->GetGUID().GetCounter() : 0;
+        seed ^= seed >> 16; seed *= 0x7feb352dU; seed ^= seed >> 15;
+
+        switch (seed % 5)
+        {
+            case 0:  return { 40,  8, 20, 12, 2500 };   // hopper
+            case 1:  return {  4,  6, 35, 25, 5000 };   // people-watcher
+            case 2:  return { 18, 26, 16, 15, 3500 };   // spinner
+            case 3:  return {  2,  2,  6,  6, 9000 };   // still, patient type
+            default: return { 15, 10, 25, 20, 4000 };   // average
+        }
+    }
+
+    // Idle social emotes. Weighted by hand: people wave and talk far more than
+    // they roar or grovel.
+    uint32 const kIdleEmotes[] =
+    {
+        EMOTE_ONESHOT_TALK, EMOTE_ONESHOT_TALK, EMOTE_ONESHOT_TALK,
+        EMOTE_ONESHOT_WAVE, EMOTE_ONESHOT_WAVE,
+        EMOTE_ONESHOT_POINT, EMOTE_ONESHOT_QUESTION, EMOTE_ONESHOT_EXCLAMATION,
+        EMOTE_ONESHOT_LAUGH, EMOTE_ONESHOT_CHEER, EMOTE_ONESHOT_APPLAUD,
+        EMOTE_ONESHOT_SALUTE, EMOTE_ONESHOT_BOW,
+        EMOTE_ONESHOT_FLEX, EMOTE_ONESHOT_DANCE, EMOTE_ONESHOT_ROAR,
+        EMOTE_ONESHOT_RUDE, EMOTE_ONESHOT_EAT, EMOTE_ONESHOT_KNEEL
+    };
+
+    std::unordered_map<uint64_t, uint32> g_nextQuirkTime;
+}
+
+static void ApplyHumanMovement(Player* bot)
+{
+    if (!bot || !bot->IsInWorld() || !bot->IsAlive()) return;
+
+    // Bots only. This is called from a loop over every Player in the world,
+    // which includes real people: without this check the fidget code grabs the
+    // player's own character and spins it, which is exactly as alarming as it
+    // sounds. WorldSession::IsBot() is the authoritative test.
+    if (!bot->GetSession() || !bot->GetSession()->IsBot()) return;
+    if (bot->IsInCombat()) return;
+    if (bot->InBattleground() || bot->InArena()) return;
+
+    // Idle only: anything else means a movement generator owns this bot.
+    if (bot->isMoving()) return;
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE) return;
+
+    uint64_t guid = bot->GetGUID().GetRawValue();
+    uint32 now = getMSTime();
+
+    auto it = g_nextQuirkTime.find(guid);
+    if (it != g_nextQuirkTime.end() && now < it->second) return;
+
+    HumanQuirk const q = QuirkFor(bot);
+    g_nextQuirkTime[guid] = now + q.minGapMs + urand(0, q.minGapMs);
+
+    uint32 roll = urand(0, 99);
+
+    if (roll < q.hopChance)
+    {
+        // Hop on the spot. Low horizontal speed so the bot does not drift.
+        bot->GetMotionMaster()->MoveJump(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                         0.1f, 7.0f);
+    }
+    else if (roll < uint32(q.hopChance) + q.spinChance)
+    {
+        // A twirl, deliberately sloppy. Nobody lands a clean 360: you spin one
+        // to three times, overshoot or come up short, and end facing somewhere
+        // you did not start. A perfect 2pi turn reads as scripted.
+        float turns = float(urand(1, 3));
+        float sloppy = frand(-1.1f, 1.1f);                 // over/undershoot
+        float delta = (turns * 2.0f * float(M_PI)) + sloppy;
+        if (urand(0, 1))
+            delta = -delta;                                // some people spin the other way
+        bot->SetFacingTo(Position::NormalizeOrientation(bot->GetOrientation() + delta));
+    }
+    else if (roll < uint32(q.hopChance) + q.spinChance + q.glanceChance)
+    {
+        // Small glance, as if looking around.
+        bot->SetFacingTo(Position::NormalizeOrientation(bot->GetOrientation() + frand(-1.6f, 1.6f)));
+    }
+    else if (roll < uint32(q.hopChance) + q.spinChance + q.glanceChance + q.emoteChance)
+    {
+        constexpr size_t kEmoteCount = sizeof(kIdleEmotes) / sizeof(kIdleEmotes[0]);
+        bot->HandleEmoteCommand(kIdleEmotes[urand(0, kEmoteCount - 1)]);
+    }
+}
+
+// Evict per-bot state for bots that are no longer in world.
+//
+// Every one of these maps was insert-only. Bots churn constantly -- the level
+// bracket system logs them out and back in, and PeriodicOnlineOffline rotates
+// the roster -- so on a long-running server each map accumulated entries for
+// bots that no longer exist. g_botDestinations was the worst offender, holding
+// a vector of up to sixteen destinations per guid forever.
+//
+// Runs on the world thread against the live player list, so a single pass is
+// enough; no per-entry ObjectAccessor lookups.
+static void SweepStaleBotState()
+{
+    std::unordered_set<uint64_t> live;
+    live.reserve(1024);
+    for (auto const& itr : ObjectAccessor::GetPlayers())
+        if (itr.second)
+            live.insert(itr.second->GetGUID().GetRawValue());
+
+    auto prune = [&live](auto& container)
+    {
+        for (auto it = container.begin(); it != container.end(); )
+        {
+            if (live.find(it->first) == live.end())
+                it = container.erase(it);
+            else
+                ++it;
+        }
+    };
+
+    {
+        std::lock_guard<std::mutex> lock(g_botDestinationsMutex);
+        prune(g_botDestinations);
+        prune(g_botDestinationsMeta);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_botPersonalityMutex);
+        prune(g_botPersonalityCache);
+        for (auto it = g_botPersonalityLoaded.begin(); it != g_botPersonalityLoaded.end(); )
+            it = (live.find(*it) == live.end()) ? g_botPersonalityLoaded.erase(it) : std::next(it);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_lastActionOutcomeMutex);
+        prune(g_lastActionOutcome);
+    }
+    {
+        std::lock_guard<std::mutex> lock(botPlayerMessagesMutex);
+        prune(botPlayerMessages);
+    }
+
+    prune(ollamaBotStates);
+    prune(ollamaBotPlans);
+    prune(ollamaPrefetchedPlans);
+    prune(g_nextQuirkTime);
+
+    for (auto it = ollamaTakenOver.begin(); it != ollamaTakenOver.end(); )
+        it = (live.find(*it) == live.end()) ? ollamaTakenOver.erase(it) : std::next(it);
+}
+
 void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
 {
     if (!g_EnableOllamaBotControl) return;
+
+    // Periodic eviction of state belonging to bots that have gone away.
+    {
+        static uint32 nextSweepMs = 0;
+        uint32 nowMs = getMSTime();
+        if (nowMs >= nextSweepMs)
+        {
+            nextSweepMs = nowMs + 60000;   // once a minute is ample for bot churn
+            SweepStaleBotState();
+        }
+    }
 
     // Apply any LLM replies that arrived since the last tick. This runs on the
     // world thread, so re-resolving the guid here is the point at which it is
@@ -2229,6 +2639,12 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
     {
         Player* bot = itr.second;
         if (!bot->IsInWorld()) continue;
+
+        // Idle fidgeting, applied to every bot in the world regardless of
+        // whether the LLM drives it. Cheap: a timestamp compare for most bots
+        // on most ticks.
+        ApplyHumanMovement(bot);
+
         std::string botName = bot->GetName();
 
         // Which bots the LLM drives.
