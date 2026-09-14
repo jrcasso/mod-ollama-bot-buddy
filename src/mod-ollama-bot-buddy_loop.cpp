@@ -2988,6 +2988,8 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
         if (!anyRealPlayer && g_OllamaRequirePlayerOnline) return;
     }
 
+    static std::unordered_set<uint64_t> testAdoptedBots;   // stable across ticks
+
     for (auto const& itr : ObjectAccessor::GetPlayers())
     {
         Player* bot = itr.second;
@@ -3032,6 +3034,23 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
                     entry.erase(0, entry.find_first_not_of(" \t"));
                     entry.erase(entry.find_last_not_of(" \t") + 1);
                     if (!entry.empty() && entry == botName) { selected = true; break; }
+                }
+            }
+
+            // Testing hook: adopt arbitrary bots so the loop can be exercised
+            // without a player online and without depending on a specific bot
+            // still being in the world.
+            if (!selected && g_OllamaTestBotCount > 0)
+            {
+                uint64_t tk = bot->GetGUID().GetRawValue();
+                if (testAdoptedBots.count(tk))
+                {
+                    selected = true;
+                }
+                else if (testAdoptedBots.size() < g_OllamaTestBotCount)
+                {
+                    testAdoptedBots.insert(tk);
+                    selected = true;
                 }
             }
 

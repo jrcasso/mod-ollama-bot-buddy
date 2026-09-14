@@ -10,6 +10,7 @@ std::string g_OllamaBotNames = "Ollamatest";
 bool g_OllamaControlParty = true;
 uint32 g_OllamaDecisionInterval = 3;
 bool g_OllamaRequirePlayerOnline = true;
+uint32 g_OllamaTestBotCount = 0;
 
 OllamaBotControlConfigWorldScript::OllamaBotControlConfigWorldScript() : WorldScript("OllamaBotControlConfigWorldScript") {}
 
@@ -24,4 +25,5 @@ void OllamaBotControlConfigWorldScript::OnStartup()
     g_OllamaControlParty = sConfigMgr->GetOption<bool>("OllamaBotControl.ControlPartyBots", true);
     g_OllamaDecisionInterval = sConfigMgr->GetOption<uint32>("OllamaBotControl.DecisionIntervalSeconds", 3);
     g_OllamaRequirePlayerOnline = sConfigMgr->GetOption<bool>("OllamaBotControl.RequirePlayerOnline", true);
+    g_OllamaTestBotCount = sConfigMgr->GetOption<uint32>("OllamaBotControl.TestBotCount", 0);
 }

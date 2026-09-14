@@ -19,6 +19,11 @@ extern uint32      g_OllamaDecisionInterval;
 // playing there is no one to watch the bots, and the model stays resident in
 // memory for nothing. Turn off to exercise the loop without logging in.
 extern bool        g_OllamaRequirePlayerOnline;
+// Drive this many arbitrary online bots, regardless of name or grouping.
+// Testing only: BotNames silently controls nothing when the named bot has been
+// rotated out of the world by the level bracket system, which is easy to do and
+// looks exactly like the module being broken.
+extern uint32      g_OllamaTestBotCount;
 
 class OllamaBotControlConfigWorldScript : public WorldScript
 {
