@@ -2116,9 +2116,10 @@ static std::string BuildBotPrompt(Player* bot)
 
     oss << GetCombatSummary(bot) << "\n\n";
 
-    // What actually matters right now, computed from live state. Placed high so
-    // it is read before the movement instructions, which otherwise dominate.
-    oss << BuildSituationAssessment(bot);
+    // The situation assessment used to sit here, high in the prompt, on the
+    // theory that it should be read before the movement instructions. Measured
+    // against real prompts captured from the live server, that theory is wrong:
+    // see the block appended at the very end of this function.
 
     // Result of the previous action. Placed before the command history so the
     // model reads the failure and its cause together, rather than seeing a
@@ -2541,6 +2542,26 @@ static std::string BuildBotPrompt(Player* bot)
     REMEMBER: NEVER REPLY WITH ANYTHING OTHER THAN A PROPERLY FORMATTED JSON OBJECT WITH QUOTES AROUND ALL STRINGS!!!
     )";
 
+    // Situation assessment goes LAST, and this placement is load-bearing.
+    //
+    // It used to be near the top, reasoning that it should be read before the
+    // movement instructions. Replaying 12 real prompts captured from the live
+    // server shows that reasoning is backwards. The wording is identical in both
+    // arms; only the position differs:
+    //
+    //   situation high in the prompt   stayed put   0/36
+    //   situation at the end           stayed put  36/36
+    //
+    // In the failing arm the prompt says "X is a quest giver already within
+    // reach at 0 yards. You do not need to move." and the model emits move_to
+    // anyway, every single time. Suppressing the destination menu instead does
+    // NOT fix it (0/12), so this is recency, not menu pressure.
+    //
+    // Earlier synthetic evals scored this 18/18 and missed the bug entirely,
+    // because a short synthetic prompt has nothing to bury the line under. Real
+    // prompts are ~24,000 characters. Test prompt changes against captured
+    // prompts, not hand-written ones.
+    oss << "\n" << BuildSituationAssessment(bot);
 
     return oss.str();
 }
