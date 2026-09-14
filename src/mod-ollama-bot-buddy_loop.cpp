@@ -2008,7 +2008,13 @@ static uint32 FindUsableDefensive(Player* bot, std::string& nameOut)
     return 0;
 }
 
-static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
+// When outCommand is supplied, each branch that writes a SITUATION line also
+// records the command that line is asking for, in the exact JSON shape
+// ParseAndExecuteBotJson consumes. The prompt text and the deterministic action
+// therefore come from one scan and one set of conditions, and cannot drift apart
+// -- which is the invariant several earlier bugs came down to.
+static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outCommand = nullptr,
+                                            float radius = 100.0f)
 {
     if (!bot || !bot->GetMap()) return "";
 
@@ -2024,6 +2030,10 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
             oss << "SITUATION: You are at " << hpPct << "% health and in combat. You will die if you "
                 << "keep attacking. Cast " << spellName << " (spell " << defensive << ") now, or move "
                 << "away to disengage. Do not attack this turn.\n";
+
+            if (outCommand && outCommand->is_null())
+                *outCommand = nlohmann::json{{"type", "spell"},
+                                             {"params", {{"spellid", defensive}}}};
         }
         else
         {
@@ -2065,6 +2075,10 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
                 << ") is attacking you and is " << uint32(bot->GetDistance(attacker))
                 << " yards away. Fight back: attack guid " << aguid
                 << " now. Do not move away.\n";
+
+            if (outCommand && outCommand->is_null())
+                *outCommand = nlohmann::json{{"type", "attack"},
+                                             {"params", {{"attack_guid", aguid}}}};
         }
     }
 
@@ -2188,6 +2202,9 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
         oss << "SITUATION: There is a lootable corpse within reach (guid "
             << nearestLoot->GetGUID().GetCounter() << ", " << uint32(lootDist)
             << " yards). Loot it now. Do not move, and do not attack anything else first.\n";
+
+        if (outCommand && outCommand->is_null())
+            *outCommand = nlohmann::json{{"type", "loot"}, {"params", nlohmann::json::object()}};
     }
 
     if (nearestTurnIn)
@@ -2195,12 +2212,20 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
         oss << "SITUATION: " << nearestTurnIn->GetName() << " (guid "
             << nearestTurnIn->GetGUID().GetCounter() << ") has your completed quest and is within reach at "
             << uint32(turnInDist) << " yards. Turn the quest in now. You do not need to move.\n";
+
+        if (outCommand && outCommand->is_null())
+            *outCommand = nlohmann::json{{"type", "interact"},
+                                         {"params", {{"guid", nearestTurnIn->GetGUID().GetCounter()}}}};
     }
     else if (nearestQuestGiver)
     {
         oss << "SITUATION: " << nearestQuestGiver->GetName() << " (guid "
             << nearestQuestGiver->GetGUID().GetCounter() << ") is a quest giver already within reach at "
             << uint32(nearestDist) << " yards. You do not need to move to reach it. Interact with it.\n";
+
+        if (outCommand && outCommand->is_null())
+            *outCommand = nlohmann::json{{"type", "interact"},
+                                         {"params", {{"guid", nearestQuestGiver->GetGUID().GetCounter()}}}};
     }
 
     // 4. Nothing in reach needs doing: go make quest progress.
@@ -2226,6 +2251,10 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
             << questTargetTitle << "' and is " << uint32(questTargetDist)
             << " yards away. Attack guid " << nearestQuestTarget->GetGUID().GetCounter()
             << " now to make progress.\n";
+
+        if (outCommand && outCommand->is_null())
+            *outCommand = nlohmann::json{{"type", "attack"},
+                                         {"params", {{"attack_guid", nearestQuestTarget->GetGUID().GetCounter()}}}};
     }
 
     std::string out = oss.str();
@@ -3510,6 +3539,35 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
                 {
                     continue;   // plan pending, waiting on the interval
                 }
+            }
+        }
+
+        // Deterministic first.
+        //
+        // BuildSituationAssessment has already worked out the right command for
+        // the common cases. Serialising that into a 24,000 character prompt and
+        // waiting ~21s for a 7B model to agree bought nothing: compliance was 0%
+        // until the text was moved to the end of the prompt, and 36% of decisions
+        // still came back as an action the executor refused.
+        //
+        // Doing it here skips inference entirely on those ticks. Anything the
+        // assessment cannot decide still goes to the model, which is where speech
+        // and genuinely open-ended choices live.
+        if (g_OllamaDeterministicActions && !state.busy &&
+            (now - state.lastRequest) >= static_cast<time_t>(g_OllamaDecisionInterval))
+        {
+            nlohmann::json decided;
+            BuildSituationAssessment(bot, &decided);
+
+            if (!decided.is_null())
+            {
+                nlohmann::json wrapped;
+                wrapped["command"]   = decided;
+                wrapped["reasoning"] = "situation assessment";
+
+                state.lastRequest = time(nullptr);
+                ParseAndExecuteBotJson(bot, wrapped.dump());
+                continue;   // no inference this tick
             }
         }
 

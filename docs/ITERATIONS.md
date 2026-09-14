@@ -77,6 +77,7 @@ and PERSONAS rows). The code changes themselves stand.
   `leveltime` of ~901s, five of them offline by the end). Quest rewards are not a
   measure of questing on this server.
 | 32 | Efficacy | Config knob `ClearNonCombatStrategies`, and measure keeping the deterministic non-combat brain | Takeover deletes mod-playerbots' own questing/travel/loot AI, which works on the 490 bots we don't control | 30 bots, ~20 min, vs a same-era CLEAR=1 control | **A wash.** walked 293y → 420y (+43%), frozen 4/25 → 6/29, failures 36.0% → 38.4%, quest accepts 4 → 5 bots. Keeping the brain does not help because the LLM overrides it. Default left at 1 |
+| 33 | Efficacy | Execute the situation assessment directly (`DeterministicActions`, default on) instead of asking the model to agree | Standing principle: deterministic first, LLM for speech and open-ended choices. The assessment already knows the command; a 24k prompt and ~21s wait bought 0% compliance until moved to the prompt's end | Same binary, config flip only, 30 bots x ~20 min each arm | **Mechanism verified, benefit not yet demonstrated.** SITUATION reaching the model 9.1% → **1.2%** (~87% intercepted, no inference). frozen 3/26 → 2/26, walked 420y → 403y, failures 33.7% → 30.6% — all within noise. Kept: removes inference where the answer is known |
 
 ## Architectural direction (decided): deterministic first, LLM for speech
 
@@ -112,7 +113,12 @@ inference to produce it. Reserve the model for speech, which is the one thing it
 measurably does that no rule can (docs/PERSONAS.md), and for situations where the
 assessment produces nothing.
 
-Expected effects, to be measured rather than assumed: the ~21s decision latency
+Row 33 implemented this and measured it. The mechanism works -- situation-bearing
+decisions reaching the model fell from 9.1% to 1.2% -- but no behavioural gain was
+detectable, because only about 9% of ticks have a definite answer today. The lever
+now is **widening what the assessment can decide**, not the plumbing.
+
+Originally expected, still to be demonstrated: the ~21s decision latency
 disappears from the common path, the 36% action-failure rate should collapse
 since the module only issues commands it has already validated, and inference
 capacity (~0.2 decisions/second) stops being the limit on how many bots can be

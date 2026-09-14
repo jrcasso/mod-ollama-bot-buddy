@@ -43,6 +43,14 @@ extern std::string g_OllamaTestBotFilter;
 // deterministic AI was contributing.
 extern bool g_OllamaClearNonCombat;
 
+// Execute the situation assessment directly instead of asking the model to agree
+// with it. The assessment already determines the correct command for a corpse
+// underfoot, an attacker on you, a giver in reach or a visible objective; putting
+// that through a 24,000 character prompt costs ~21s and was obeyed far from
+// always. Inference is then reserved for ticks with no definite answer, which is
+// where speech and genuinely open-ended choices live.
+extern bool g_OllamaDeterministicActions;
+
 class OllamaBotControlConfigWorldScript : public WorldScript
 {
 public:

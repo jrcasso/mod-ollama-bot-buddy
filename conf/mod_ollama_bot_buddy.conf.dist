@@ -58,3 +58,12 @@ OllamaBotControl.TestBotFilter = any
 #     bot cannot quest, loot or travel by itself.
 #     Default: 1 (clear, existing behaviour). 0 leaves the native AI in place.
 OllamaBotControl.ClearNonCombatStrategies = 1
+
+# OllamaBotControl.DeterministicActions
+#     Execute the situation assessment directly instead of asking the model to
+#     agree with it. Covers corpse underfoot, an attacker on you, a quest giver
+#     or turn-in in reach, and a visible quest objective. Ticks with no definite
+#     answer still go to the LLM, which is where speech and open-ended choices
+#     live.
+#     Default: 1 (enabled)
+OllamaBotControl.DeterministicActions = 1
