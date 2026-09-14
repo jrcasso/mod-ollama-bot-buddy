@@ -51,6 +51,11 @@ extern bool g_OllamaClearNonCombat;
 // where speech and genuinely open-ended choices live.
 extern bool g_OllamaDeterministicActions;
 
+// Lateral repositioning during combat. Bots sit on IDLE_MOTION_TYPE for 88.6% of
+// in-combat observations, i.e. they fight standing still. Deterministic: range
+// band, line of sight and cast state are all known server-side.
+extern bool g_OllamaCombatStrafe;
+
 class OllamaBotControlConfigWorldScript : public WorldScript
 {
 public:

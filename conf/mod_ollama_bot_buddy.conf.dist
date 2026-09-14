@@ -67,3 +67,11 @@ OllamaBotControl.ClearNonCombatStrategies = 1
 #     live.
 #     Default: 1 (enabled)
 OllamaBotControl.DeterministicActions = 1
+
+# OllamaBotControl.CombatStrafe
+#     Step sideways during combat instead of standing still. Preserves the range
+#     band the bot fights from, requires line of sight to the target and a
+#     pathable destination, and never fires while a cast is in progress (movement
+#     would cancel it).
+#     Default: 1 (enabled)
+OllamaBotControl.CombatStrafe = 1

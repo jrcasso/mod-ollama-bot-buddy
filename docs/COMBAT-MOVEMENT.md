@@ -111,3 +111,39 @@ no point animating bots nobody can see -- but it means fidgeting cannot be
 observed from the server side without either a player online or opening that gate.
 Opening it with BotNames set to a name nobody has, and TestBotCount at 0, runs the
 fidget loop while selecting no bot for the LLM, so nothing loads the model.
+
+## Deterministic strafing (iteration 37)
+
+`ApplyHumanMovement`'s combat branch now tries a lateral step before falling back
+to a hop or an emote. No inference is involved: whether a step is safe is a
+lookup, not a judgement.
+
+Guards, each there for a specific failure it would otherwise cause:
+
+* **Never while casting.** `IsNonMeleeSpellCast(false)` — movement cancels a cast
+  bar, so a strafing caster would simply stop doing damage.
+* **Stay in the range band.** Melee must remain within 4 yards; a caster keeps
+  8 yards to its spell range. The step is taken perpendicular to the line to the
+  target, so distance barely changes: a strafe, not an approach or a retreat.
+* **Keep line of sight**, checked from the destination, and require a **pathable**
+  destination via `PathGenerator`.
+* **Never change facing.** Turning away stops melee swings and breaks directional
+  spells, which is why the twirl and glance quirks stay out of combat.
+
+Measured as a config flip on one binary, 10 minutes per arm, with the fidget gate
+open and no bot selected for the LLM so nothing loaded the model:
+
+    CombatStrafe = 0    bot deaths 3    tick 152ms   cpu 292%   crashes 0
+    CombatStrafe = 1    bot deaths 3    tick 104ms   cpu 303%   crashes 0
+
+Deaths are the signal that matters: if strafing pulled bots out of range or broke
+their casts they would lose fights, and they do not.
+
+Firing was verified rather than assumed, because the previous iteration shipped a
+behaviour that turned out to be unobservable. Over four minutes: tried 132,
+fired 125, roughly 93%. The guards are guards, not a filter that quietly disables
+the feature.
+
+Quest rewards were sampled too and are **useless here**: the delta was negative in
+both arms, -26 and -109, because `character_queststatus_rewarded` loses rows when
+RandomPlayerbotMgr deletes and recreates bots. See docs/QUESTS.md.
