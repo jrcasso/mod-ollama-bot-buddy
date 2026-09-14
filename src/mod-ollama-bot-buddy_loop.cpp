@@ -1732,6 +1732,115 @@ static std::string GetBotPersonalityKey(Player* bot)
     return key;
 }
 
+// ---------------------------------------------------------------------------
+// Situation assessment.
+//
+// Measured on the eval harness against identical game state, the model failed
+// two obvious situations outright:
+//
+//   * quest giver at distance 0.0, no active quests -> chose move_to 18/18
+//   * 16% health while in combat                    -> chose attack  18/18
+//
+// It was not incapable, it simply never connected state to response. Naming the
+// situation fixed the first completely (interact 18/18). Naming the specific
+// defensive spell fixed the second (spell 16/18); a general "use a defensive
+// ability" only moved it to 5/18. A 7B model does not reliably infer "I have
+// Shield Wall and I am at 16%, therefore cast it" -- it has to be told.
+//
+// Everything here is computed from real state: the bot's own spellbook,
+// cooldowns, health, and the distance to things it can actually interact with.
+// ---------------------------------------------------------------------------
+
+// Defensive cooldowns and self-heals worth naming, per class. First one the bot
+// actually knows and has off cooldown wins.
+static uint32 FindUsableDefensive(Player* bot, std::string& nameOut)
+{
+    if (!bot) return 0;
+
+    static std::unordered_map<uint8, std::vector<uint32>> const kDefensives =
+    {
+        { CLASS_WARRIOR,      { 871, 12975, 55694 } },          // Shield Wall, Last Stand, Enraged Regen
+        { CLASS_PALADIN,      { 642, 498, 633, 1038 } },        // Divine Shield, Divine Protection, LoH
+        { CLASS_DEATH_KNIGHT, { 48792, 48707, 55233 } },        // Icebound Fortitude, AMS, Vampiric Blood
+        { CLASS_ROGUE,        { 5277, 31224, 26669 } },         // Evasion, Cloak of Shadows, Evasion rank
+        { CLASS_PRIEST,       { 19236, 17, 586 } },             // Desperate Prayer, PW:S, Fade
+        { CLASS_MAGE,         { 45438, 11958, 66 } },           // Ice Block, Cold Snap, Invisibility
+        { CLASS_WARLOCK,      { 47860, 6229, 5697 } },          // Death Coil, Shadow Ward
+        { CLASS_HUNTER,       { 5384, 19263, 781 } },           // Feign Death, Deterrence, Disengage
+        { CLASS_SHAMAN,       { 30823, 8178, 2825 } },          // Shamanistic Rage, Grounding
+        { CLASS_DRUID,        { 22812, 61336, 22842 } },        // Barkskin, Survival Instincts, Frenzied Regen
+    };
+
+    auto it = kDefensives.find(bot->getClass());
+    if (it == kDefensives.end()) return 0;
+
+    for (uint32 spellId : it->second)
+    {
+        if (!bot->HasSpell(spellId)) continue;
+        if (bot->HasSpellCooldown(spellId)) continue;
+
+        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+        {
+            char const* n = info->SpellName[0];
+            nameOut = (n && *n) ? n : "your defensive ability";
+            return spellId;
+        }
+    }
+    return 0;
+}
+
+static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
+{
+    if (!bot || !bot->GetMap()) return "";
+
+    std::ostringstream oss;
+    uint32 hpPct = bot->GetMaxHealth() ? uint32((100.0 * bot->GetHealth()) / bot->GetMaxHealth()) : 100;
+
+    // 1. Survival first: it overrides everything else.
+    if (bot->IsInCombat() && hpPct <= 30)
+    {
+        std::string spellName;
+        if (uint32 defensive = FindUsableDefensive(bot, spellName))
+        {
+            oss << "SITUATION: You are at " << hpPct << "% health and in combat. You will die if you "
+                << "keep attacking. Cast " << spellName << " (spell " << defensive << ") now, or move "
+                << "away to disengage. Do not attack this turn.\n";
+        }
+        else
+        {
+            oss << "SITUATION: You are at " << hpPct << "% health and in combat with no defensive "
+                << "ability ready. Move away to disengage rather than trading more damage.\n";
+        }
+    }
+
+    // 2. Something interactable is already in reach, so moving is wasted.
+    Creature* nearestQuestGiver = nullptr;
+    float nearestDist = 6.0f;   // interact range, with a little slack
+    for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
+    {
+        Creature* c = pair.second;
+        if (!c || c->isDead()) continue;
+        if (!bot->IsWithinDistInMap(c, radius)) continue;
+
+        float dist = bot->GetDistance(c);
+        if (dist >= nearestDist) continue;
+        if (!c->IsQuestGiver()) continue;
+
+        nearestQuestGiver = c;
+        nearestDist = dist;
+    }
+
+    if (nearestQuestGiver)
+    {
+        oss << "SITUATION: " << nearestQuestGiver->GetName() << " (guid "
+            << nearestQuestGiver->GetGUID().GetCounter() << ") is a quest giver already within reach at "
+            << uint32(nearestDist) << " yards. You do not need to move to reach it. Interact with it.\n";
+    }
+
+    std::string out = oss.str();
+    return out.empty() ? out : out + "\n";
+}
+
 static std::string BuildBotPrompt(Player* bot)
 {
     PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
@@ -1771,6 +1880,10 @@ static std::string BuildBotPrompt(Player* bot)
     oss << "Position: " << bot->GetPositionX() << " " << bot->GetPositionY() << " " << bot->GetPositionZ() << "\n";
 
     oss << GetCombatSummary(bot) << "\n\n";
+
+    // What actually matters right now, computed from live state. Placed high so
+    // it is read before the movement instructions, which otherwise dominate.
+    oss << BuildSituationAssessment(bot);
 
     // Result of the previous action. Placed before the command history so the
     // model reads the failure and its cause together, rather than seeing a
