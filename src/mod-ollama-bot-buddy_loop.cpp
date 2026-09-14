@@ -3235,16 +3235,37 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
                     ++plan.next;
                     state.lastRequest = now;
 
-                    // Speculatively request the next plan while the final step
-                    // runs, so the inference latency overlaps execution instead
-                    // of stalling the bot afterwards.
-                    if (isFinalStep && !state.busy && ollamaPrefetchedPlans.find(guid) == ollamaPrefetchedPlans.end())
+                    // Execute BEFORE prefetching. FireLlmRequest calls
+                    // BuildBotPrompt synchronously on this thread, and that
+                    // rebuilds the cached destination list whenever the bot has
+                    // moved more than 15 yards or the 10s TTL has lapsed -- both
+                    // near-certain by the last step of a plan. Prefetching first
+                    // therefore resolved this step's destination_index against a
+                    // list the model never saw, and the range check still passed,
+                    // so the bot silently walked to the wrong place.
+                    //
+                    // Measured over 8 consecutive prompt pairs captured from the
+                    // live server: 7 of 8 rebuilds remapped indices, three of them
+                    // remapping every single entry. In one, index [0] changed from
+                    // "Balir Frosthammer (5y)" (the quest giver the plan was
+                    // heading to) into "Coldridge Mountaineer (3y)".
+                    bool const stepOk = ParseAndExecuteBotJson(bot, wrapped.dump());
+
+                    // Now it is safe to rebuild the destination list. The step has
+                    // already resolved, and the inference still overlaps the actual
+                    // movement, which takes seconds -- so the prefetch keeps its
+                    // benefit. Skipping the request when the step failed also saves
+                    // a slot of very scarce capacity (~0.2 decisions/second): the
+                    // plan is discarded just below, and the old code fired the
+                    // request only to erase the result.
+                    if (stepOk && isFinalStep && !state.busy &&
+                        ollamaPrefetchedPlans.find(guid) == ollamaPrefetchedPlans.end())
                         FireLlmRequest(bot, guid, state);
 
                     // A failed step invalidates the rest: the world has moved on
                     // from whatever the plan assumed, so re-plan next tick. The
                     // prefetch assumed this step succeeded, so it goes too.
-                    if (!ParseAndExecuteBotJson(bot, wrapped.dump()))
+                    if (!stepOk)
                     {
                         ollamaBotPlans.erase(guid);
                         ollamaPrefetchedPlans.erase(guid);
