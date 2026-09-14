@@ -31,6 +31,18 @@ extern uint32      g_OllamaTestBotCount;
 // sample keeps tracking live combat.
 extern std::string g_OllamaTestBotFilter;
 
+// Whether takeover deletes the bot's non-combat brain.
+//
+// That brain is mod-playerbots' deterministic AI for questing, travel, looting
+// and vendoring, and it demonstrably works: 5,724 quest turn-ins across the 490
+// bots this module does not control. Clearing it is what stops the native AI
+// fighting the LLM over movement, but it is also why a taken-over bot cannot
+// quest, loot or travel on its own.
+//
+// Default 1 preserves the existing behaviour. Set to 0 to measure what the
+// deterministic AI was contributing.
+extern bool g_OllamaClearNonCombat;
+
 class OllamaBotControlConfigWorldScript : public WorldScript
 {
 public:

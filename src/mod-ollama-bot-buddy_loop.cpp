@@ -3371,7 +3371,10 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             // back to the corpse. Clearing either left the bot with no way to
             // fight or no way to resurrect, while the LLM kept issuing commands
             // that a corpse or a strategy-less engine cannot carry out.
-            ai->ClearStrategies(BOT_STATE_NON_COMBAT);
+            // Gated so the contribution of the deterministic non-combat AI can
+            // be measured rather than argued about. Default keeps the clear.
+            if (g_OllamaClearNonCombat)
+                ai->ClearStrategies(BOT_STATE_NON_COMBAT);
             ollamaTakenOver.insert(bot->GetGUID().GetRawValue());
 
             // One-shot proof that the combat and dead brains actually survive

@@ -12,6 +12,7 @@ uint32 g_OllamaDecisionInterval = 3;
 bool g_OllamaRequirePlayerOnline = true;
 uint32 g_OllamaTestBotCount = 0;
 std::string g_OllamaTestBotFilter = "any";
+bool g_OllamaClearNonCombat = true;
 
 OllamaBotControlConfigWorldScript::OllamaBotControlConfigWorldScript() : WorldScript("OllamaBotControlConfigWorldScript") {}
 
@@ -28,4 +29,5 @@ void OllamaBotControlConfigWorldScript::OnStartup()
     g_OllamaRequirePlayerOnline = sConfigMgr->GetOption<bool>("OllamaBotControl.RequirePlayerOnline", true);
     g_OllamaTestBotCount = sConfigMgr->GetOption<uint32>("OllamaBotControl.TestBotCount", 0);
     g_OllamaTestBotFilter = sConfigMgr->GetOption<std::string>("OllamaBotControl.TestBotFilter", "any");
+    g_OllamaClearNonCombat = sConfigMgr->GetOption<bool>("OllamaBotControl.ClearNonCombatStrategies", true);
 }

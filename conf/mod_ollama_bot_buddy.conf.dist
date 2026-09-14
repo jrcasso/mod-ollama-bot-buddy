@@ -50,3 +50,11 @@ OllamaBotControl.TestBotCount = 0
 #               leaves combat, so the sample keeps following live fighting.
 #     Default: any
 OllamaBotControl.TestBotFilter = any
+
+# OllamaBotControl.ClearNonCombatStrategies
+#     Whether takeover deletes the bot's non-combat brain (mod-playerbots' own
+#     AI for questing, travel, looting and vendoring). Clearing it stops the
+#     native AI fighting the LLM over movement, but it is also why a taken-over
+#     bot cannot quest, loot or travel by itself.
+#     Default: 1 (clear, existing behaviour). 0 leaves the native AI in place.
+OllamaBotControl.ClearNonCombatStrategies = 1

@@ -76,10 +76,13 @@ and PERSONAS rows). The code changes themselves stand.
   from 7 bots that `RandomPlayerbotMgr` had just re-randomised (identical
   `leveltime` of ~901s, five of them offline by the end). Quest rewards are not a
   measure of questing on this server.
+| 32 | Efficacy | Config knob `ClearNonCombatStrategies`, and measure keeping the deterministic non-combat brain | Takeover deletes mod-playerbots' own questing/travel/loot AI, which works on the 490 bots we don't control | 30 bots, ~20 min, vs a same-era CLEAR=1 control | **A wash.** walked 293y → 420y (+43%), frozen 4/25 → 6/29, failures 36.0% → 38.4%, quest accepts 4 → 5 bots. Keeping the brain does not help because the LLM overrides it. Default left at 1 |
 
-## Open architectural question: LLM vs the deterministic AI
+## Architectural direction (decided): deterministic first, LLM for speech
 
-Raised by the user, and the measurements support it.
+The user's instruction, 2026-09-14: *"use deterministic approaches in general, and
+rely on LLM for speech and genuinely open-ended decisions."* This is now the
+standing principle for this module, not an open question.
 
 `ClearStrategies(BOT_STATE_NON_COMBAT)` deletes the native brain that quests,
 travels, loots and vendors. That brain demonstrably works: 5,724 quest turn-ins
@@ -97,7 +100,20 @@ The one place the LLM measurably adds something no rule could is speech: persona
 produce visibly distinct chat (docs/PERSONAS.md), while showing no effect on
 actions across four tests.
 
-A more honest split would be: leave the non-combat brain in place, execute the
-situation assessment directly when it has a definite answer, and call the model
-for chat and for genuinely open-ended choices. That is a reversal of the module's
-premise, so it is recorded here rather than acted on.
+The first step was tried and measured (row 32): simply *keeping* the non-combat
+brain does not work, because the LLM still issues the movement commands that
+override it. Walked distance rose 43% and everything else was unchanged.
+
+So the change that matters is the other half: **execute the situation assessment
+directly instead of asking the model to agree with it.** When the assessment has a
+definite answer -- corpse underfoot, attacker on you, giver in reach, objective
+visible -- the module already knows the correct command and does not need
+inference to produce it. Reserve the model for speech, which is the one thing it
+measurably does that no rule can (docs/PERSONAS.md), and for situations where the
+assessment produces nothing.
+
+Expected effects, to be measured rather than assumed: the ~21s decision latency
+disappears from the common path, the 36% action-failure rate should collapse
+since the module only issues commands it has already validated, and inference
+capacity (~0.2 decisions/second) stops being the limit on how many bots can be
+driven.
