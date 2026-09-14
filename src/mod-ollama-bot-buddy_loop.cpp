@@ -2078,6 +2078,12 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
     Creature* nearestTurnIn = nullptr;    float turnInDist = 6.0f;
     Creature* nearestQuestGiver = nullptr; float nearestDist = 6.0f;
 
+    // Quest objective in sight. Kept separate because, unlike the others, it is
+    // not an "already in reach" case: it is what the bot should be doing when
+    // nothing else needs attention.
+    Creature* nearestQuestTarget = nullptr; float questTargetDist = 40.0f;
+    std::string questTargetTitle;
+
     for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
     {
         Creature* c = pair.second;
@@ -2096,6 +2102,40 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
                 lootDist = dist;
             }
             continue;
+        }
+
+        // Is this creature an objective of an active quest? Same test the
+        // visible-entity list uses to print "[QUEST TARGET - <quest>]".
+        if (dist < questTargetDist && c->IsAlive() &&
+            bot->IsWithinLOSInMap(c) && bot->IsValidAttackTarget(c))
+        {
+            for (auto const& qs : bot->getQuestStatusMap())
+            {
+                if (qs.second.Status != QUEST_STATUS_INCOMPLETE) continue;
+                Quest const* q = sObjectMgr->GetQuestTemplate(qs.first);
+                if (!q) continue;
+
+                bool matched = false;
+                for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                {
+                    if (q->RequiredNpcOrGo[i] <= 0) continue;
+                    if (q->RequiredNpcOrGo[i] != (int32)c->GetEntry()) continue;
+                    if (bot->GetReqKillOrCastCurrentCount(qs.first, q->RequiredNpcOrGo[i])
+                            < q->RequiredNpcOrGoCount[i])
+                    {
+                        matched = true;
+                        break;
+                    }
+                }
+
+                if (matched)
+                {
+                    nearestQuestTarget = c;
+                    questTargetDist = dist;
+                    questTargetTitle = q->GetTitle();
+                    break;
+                }
+            }
         }
 
         if (!c->IsQuestGiver()) continue;
@@ -2161,6 +2201,31 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
         oss << "SITUATION: " << nearestQuestGiver->GetName() << " (guid "
             << nearestQuestGiver->GetGUID().GetCounter() << ") is a quest giver already within reach at "
             << uint32(nearestDist) << " yards. You do not need to move to reach it. Interact with it.\n";
+    }
+
+    // 4. Nothing in reach needs doing: go make quest progress.
+    //
+    // The prompt already carried "*** QUEST TARGETS AVAILABLE! Attack ONLY the
+    // LIVING creatures marked with [QUEST TARGET] ***", and the entity list
+    // already tagged them, but that warning sits at ~18% depth in the prompt and
+    // is ignored there like every other instruction outside this block. Measured
+    // on real captured prompts with a tagged quest target visible:
+    //
+    //   warning at 18% depth (what production shipped)   attacked it   0/16
+    //   the same instruction as a SITUATION line here    attacked it  16/16
+    //
+    // Emitted last on purpose. A corpse at the bot's feet, a completed quest to
+    // hand in, or a giver with work available are all "already in reach" and
+    // cost no travel, so they outrank walking off to fight something. The
+    // !IsInCombat() guard leaves the branches above to deal with a fight that is
+    // already happening rather than sending the bot after a different target.
+    if (oss.str().empty() && nearestQuestTarget && !bot->IsInCombat())
+    {
+        oss << "SITUATION: " << nearestQuestTarget->GetName() << " (guid "
+            << nearestQuestTarget->GetGUID().GetCounter() << ") is a target for your quest '"
+            << questTargetTitle << "' and is " << uint32(questTargetDist)
+            << " yards away. Attack guid " << nearestQuestTarget->GetGUID().GetCounter()
+            << " now to make progress.\n";
     }
 
     std::string out = oss.str();
