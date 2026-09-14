@@ -1813,24 +1813,68 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
         }
     }
 
-    // 2. Something interactable is already in reach, so moving is wasted.
-    Creature* nearestQuestGiver = nullptr;
-    float nearestDist = 6.0f;   // interact range, with a little slack
+    // 2. Things already in reach, so moving is wasted effort.
+    //
+    // Measured: with a lootable corpse 3 yards away the model chose move_to or
+    // attack 12/12, and with a completed quest and its giver at 1 yard it chose
+    // move_to 12/12. The MOVEMENT block is the loudest thing in the prompt and
+    // biases everything toward movement unless the alternative is spelled out.
+    Creature* nearestLoot = nullptr;      float lootDist = 6.0f;
+    Creature* nearestTurnIn = nullptr;    float turnInDist = 6.0f;
+    Creature* nearestQuestGiver = nullptr; float nearestDist = 6.0f;
+
     for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
     {
         Creature* c = pair.second;
-        if (!c || c->isDead()) continue;
+        if (!c) continue;
         if (!bot->IsWithinDistInMap(c, radius)) continue;
-
         float dist = bot->GetDistance(c);
-        if (dist >= nearestDist) continue;
+
+        // Lootable corpse the bot has rights to.
+        if (c->isDead())
+        {
+            if (dist < lootDist && c->hasLootRecipient() &&
+                (c->GetLootRecipient() == bot ||
+                 (c->GetLootRecipientGroup() && bot->GetGroup() == c->GetLootRecipientGroup())))
+            {
+                nearestLoot = c;
+                lootDist = dist;
+            }
+            continue;
+        }
+
         if (!c->IsQuestGiver()) continue;
 
-        nearestQuestGiver = c;
-        nearestDist = dist;
+        // Does this giver have one of our completed quests?
+        bool hasTurnIn = false;
+        QuestRelationBounds involved = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(c->GetEntry());
+        for (auto itr = involved.first; itr != involved.second; ++itr)
+        {
+            if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
+            {
+                hasTurnIn = true;
+                break;
+            }
+        }
+
+        if (hasTurnIn && dist < turnInDist) { nearestTurnIn = c; turnInDist = dist; }
+        else if (!hasTurnIn && dist < nearestDist) { nearestQuestGiver = c; nearestDist = dist; }
     }
 
-    if (nearestQuestGiver)
+    if (nearestLoot)
+    {
+        oss << "SITUATION: There is a lootable corpse within reach (guid "
+            << nearestLoot->GetGUID().GetCounter() << ", " << uint32(lootDist)
+            << " yards). Loot it now. Do not move, and do not attack anything else first.\n";
+    }
+
+    if (nearestTurnIn)
+    {
+        oss << "SITUATION: " << nearestTurnIn->GetName() << " (guid "
+            << nearestTurnIn->GetGUID().GetCounter() << ") has your completed quest and is within reach at "
+            << uint32(turnInDist) << " yards. Turn the quest in now. You do not need to move.\n";
+    }
+    else if (nearestQuestGiver)
     {
         oss << "SITUATION: " << nearestQuestGiver->GetName() << " (guid "
             << nearestQuestGiver->GetGUID().GetCounter() << ") is a quest giver already within reach at "
