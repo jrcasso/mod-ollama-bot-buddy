@@ -3216,10 +3216,10 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
                 uint64_t tk = bot->GetGUID().GetRawValue();
 
                 // Adopting whichever bots come first samples whatever most of
-                // the 500 are doing, which is standing in a town. Across 59
-                // prompts captured that way, not one had a visible hostile, so
-                // target selection and combat decisions were never actually
-                // observed. "combat" narrows the sample to bots that are
+                // the 500 are doing, which is standing in a town: only 4% of
+                // prompts captured that way had the bot in combat, so combat
+                // decisions were barely sampled at all.
+                // "combat" narrows the sample to bots that are
                 // fighting, and hands the slot back when they stop, so the
                 // sample keeps following live combat instead of freezing on
                 // whoever happened to be fighting first.

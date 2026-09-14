@@ -44,8 +44,8 @@ OllamaBotControl.TestBotCount = 0
 # OllamaBotControl.TestBotFilter
 #     Which bots TestBotCount is allowed to adopt.
 #       any     whichever bots come first. In a 500-bot world that means bots
-#               idling in towns: across 59 captured prompts not one contained a
-#               visible hostile, so combat decisions were never observed.
+#               idling in towns: only 4% of captured prompts had the bot in
+#               combat, so combat decisions were barely sampled.
 #       combat  only bots currently in combat. The slot is released when a bot
 #               leaves combat, so the sample keeps following live fighting.
 #     Default: any

@@ -25,10 +25,10 @@ extern bool        g_OllamaRequirePlayerOnline;
 // looks exactly like the module being broken.
 extern uint32      g_OllamaTestBotCount;
 // "any" adopts whichever bots come first, which in a 500-bot world means bots
-// idling in towns: across 59 captured prompts not one contained a visible
-// hostile, so combat decisions had never been observed in production at all.
-// "combat" restricts adoption to bots actually fighting, and releases the slot
-// when they stop, so the sample keeps tracking live combat.
+// idling in towns: only 4% of captured prompts had the bot in combat, so combat
+// decisions were barely sampled. "combat" restricts adoption to bots actually
+// fighting (measured: 4% -> 90%) and releases the slot when they stop, so the
+// sample keeps tracking live combat.
 extern std::string g_OllamaTestBotFilter;
 
 class OllamaBotControlConfigWorldScript : public WorldScript
