@@ -80,16 +80,34 @@ of it can reach a real player's character.
 Measured over 10 minutes with no takeover: 32 quest rewards against a 36 baseline,
 bot corpses 8 to 12, no crashes, tick 104-126ms, CPU 300%. Nothing regressed.
 
-### Known limitation, not yet measured
+### Reachability: measured, and the worry was unfounded
 
 The function still requires the bot to be idle:
 
     if (bot->isMoving()) return;
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE) return;
 
-A bot fighting in melee is usually running a chase generator, which is not
-IDLE_MOTION_TYPE, so the in-combat hop may rarely fire in practice. The
-battleground half is solid -- a bot standing at a flag out of combat is idle and
-will now fidget where it previously could not -- but "bots visibly hop mid-fight"
-is **unverified**, and the idle guard is the first thing to examine if they still
-look static in a fight.
+The concern was that a bot fighting in melee runs a chase generator, which is not
+IDLE_MOTION_TYPE, so the combat hop might never fire. A temporary counter settled
+it over five minutes:
+
+    seen=163843  notMoving=146617  idleGen=145210  gens=[8:1407  0:145210]
+
+**88.6% of in-combat observations pass the idle guard.** The combat branch is
+thoroughly reachable, and the incidental finding matters more than the answer:
+bots in a fight are standing still about nine tenths of the time. That stillness
+is exactly what the user described, and a hop only paints over it -- real kiting
+and line-of-sight work is still absent.
+
+### ApplyHumanMovement only runs when a real player is online
+
+Worth knowing before trying to measure any of this. The call sits inside a loop
+preceded by
+
+    if (!anyRealPlayer && g_OllamaRequirePlayerOnline) return;
+
+so with nobody logged in the entire path is dormant. That is sensible -- there is
+no point animating bots nobody can see -- but it means fidgeting cannot be
+observed from the server side without either a player online or opening that gate.
+Opening it with BotNames set to a name nobody has, and TestBotCount at 0, runs the
+fidget loop while selecting no bot for the LLM, so nothing loads the model.
