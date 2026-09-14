@@ -2,6 +2,7 @@
 #include "mod-ollama-bot-buddy_config.h"
 #include "mod-ollama-bot-buddy_loop.h"
 #include "Playerbots.h"
+#include "LootObjectStack.h"
 #include "PlayerbotAI.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -809,12 +810,69 @@ namespace BotBuddyAI
 
     bool LootNearby(Player* bot)
     {
-        if (!bot) return false;
+        if (!bot || !bot->GetMap()) return false;
 
         PlayerbotAI* ai = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
         if (!ai) return false;
 
-        // Use the bot's AI system to handle looting
+        // Looting is a four-stage pipeline in LootNonCombatStrategy, and takeover
+        // deletes that strategy along with the rest of BOT_STATE_NON_COMBAT:
+        //
+        //     often                -> add all loot    populate the stack
+        //     loot available       -> loot            SELECT a target
+        //     far from loot target -> move to loot    approach it
+        //     can loot             -> open loot       actually loot it
+        //
+        // This function used to call only "loot", which merely selects a corpse
+        // and never opens one, so a bot under takeover reported "loot did not
+        // execute" in roughly 9% of captured decisions. Repopulating the stack
+        // alone was tried and measured at no effect, for the same reason.
+        //
+        // Drive the stages the deleted strategy used to drive: find the nearest
+        // corpse the bot actually has rights to, make it the loot target, and
+        // open it. OpenLootAction::DoLoot enforces INTERACTION_DISTANCE - 2, so
+        // only consider corpses already that close; the situation assessment only
+        // mentions corpses within 6 yards, so the approach stage is not needed.
+        if (AiObjectContext* ctx = ai->GetAiObjectContext())
+        {
+            Creature* best = nullptr;
+            float bestDist = INTERACTION_DISTANCE - 2.0f;
+
+            for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
+            {
+                Creature* c = pair.second;
+                if (!c || !c->isDead()) continue;
+                if (!c->hasLootRecipient()) continue;
+                if (c->GetLootRecipient() != bot &&
+                    !(c->GetLootRecipientGroup() && bot->GetGroup() == c->GetLootRecipientGroup()))
+                    continue;
+
+                float const d = bot->GetDistance(c);
+                if (d < bestDist)
+                {
+                    best = c;
+                    bestDist = d;
+                }
+            }
+
+            if (best)
+            {
+                ObjectGuid const lootGuid = best->GetGUID();
+
+                // Keep the stack consistent: OpenLootAction removes the guid from
+                // it on success, and nothing else is adding to it any more.
+                if (LootObjectStack* stack = ctx->GetValue<LootObjectStack*>("available loot")->Get())
+                    stack->Add(lootGuid);
+
+                ctx->GetValue<LootObject>("loot target")->Set(LootObject(bot, lootGuid));
+
+                Event openEvent = Event("", "");
+                if (ai->DoSpecificAction("open loot", openEvent))
+                    return true;
+            }
+        }
+
+        // Fall back to the original behaviour when nothing is in reach.
         Event event = Event("", "");
         return ai->DoSpecificAction("loot", event);
     }

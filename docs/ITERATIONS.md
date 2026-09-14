@@ -44,6 +44,8 @@ and PERSONAS rows). The code changes themselves stand.
 | 27 | Efficacy | A/B: does takeover make bots worse at questing? | Takeover permanently wipes the non-combat brain (`ClearStrategies(BOT_STATE_NON_COMBAT)`), which is what quests | 31 bots taken over vs 469 native, 30 min, quest rewards | **Inconclusive — metric invalid.** `character_queststatus_rewarded` is contaminated by bot re-randomisation. No evidence of harm; hypothesis still open |
 | 28 | Efficacy | Accept quests through the core API instead of a playerbot action (`AcceptQuest`) | `AcceptQuestAction::Execute` returns false on its first line for a bot with no master, and callers discarded the result, so a quest never accepted looked accepted | 30 bots taken over, 15 min, `character_queststatus` deltas | **0 accepts in 30 min → 5 accepts by 4 bots in 15 min.** Live proof: a level-26 draenei had sat at Megelon for 15 decisions with 0 quest rows |
 | 29 | Efficacy | Tried to repair looting under takeover by repopulating the loot stack; **reverted** | 9% of prompts reported "loot did not execute"; takeover wipes the non-combat "loot" strategy that fills the stack | 30 bots, ~25 min, failure rate vs a 336-prompt baseline | **No effect: 8.6% → 10.1%.** Looting is a 4-stage pipeline (add / select / approach / open) and the module only ever calls *select*, so filling the stack cannot help. Change reverted |
+| 30 | Efficacy | Drive the full loot pipeline (`open loot`), not just *select* | Module called only stage 2 of 4, so it could never actually loot | 30 bots, ~20 min | **Unverified — never exercised.** 0 dead creatures appeared in ~900 captured prompts, so the path never ran. Kept: it completes a real gap, and only fires when a corpse is in range |
+| 31 | Efficacy | Gate `loot` out of the schema when no corpse is in range; **reverted** | The model chose `loot` with nothing lootable in 6-9% of decisions | 30 bots, ~20 min, failure mix | **Target metric fixed, total made worse.** loot-fail 8.6% → **0%**, but interact-fail 11.3% → **34.9%** and all-fail 21.7% → **36.0%**. Blocking one invalid action displaced it into a worse one |
 
 ## Recurring lessons
 
@@ -54,6 +56,14 @@ and PERSONAS rows). The code changes themselves stand.
   `QUEST TARGET` vs `[QUEST TARGET -` each produced a wrong conclusion.
 * **Behaviour never sampled is behaviour never verified.** Combat and grouping
   were both invisible until the sampling was fixed.
+* **Constraining the model displaces the error, it does not remove it.** Gating
+  `loot` out of the schema drove loot failures to zero and interact failures from
+  11% to 35%. Measure the total, not the metric you aimed at.
+* **We are re-implementing deterministic AI that already worked.** Takeover deletes
+  the non-combat brain, and nearly every fix since has been rebuilding one of its
+  pieces (accept quest, loot pipeline, quest targeting, fight-back) so a 7B model
+  can be asked to agree with an answer the code already computed. See the note at
+  the end of this file.
 * **Takeover removes machinery, not just behaviour.** `ClearStrategies(BOT_STATE_NON_COMBAT)`
   deletes the strategies that populate values and drive multi-step pipelines. Two
   separate bugs (quest accept, looting) both trace to delegated playerbot actions
@@ -66,3 +76,28 @@ and PERSONAS rows). The code changes themselves stand.
   from 7 bots that `RandomPlayerbotMgr` had just re-randomised (identical
   `leveltime` of ~901s, five of them offline by the end). Quest rewards are not a
   measure of questing on this server.
+
+## Open architectural question: LLM vs the deterministic AI
+
+Raised by the user, and the measurements support it.
+
+`ClearStrategies(BOT_STATE_NON_COMBAT)` deletes the native brain that quests,
+travels, loots and vendors. That brain demonstrably works: 5,724 quest turn-ins
+across 490 bots this module does not control, average level 44.5.
+
+What replaced it costs ~0.2 decisions/second and ~21s per decision, and picks
+move_to 24 times out of 24 when no situation line applies. Meanwhile
+BuildSituationAssessment already computes the correct action deterministically --
+corpse underfoot, attacker on you, giver in reach, objective visible -- and then
+we serialise it into a 24,000 character prompt and ask the model to echo it back.
+Compliance with those instructions was 0% until they were moved to the end of the
+prompt.
+
+The one place the LLM measurably adds something no rule could is speech: personas
+produce visibly distinct chat (docs/PERSONAS.md), while showing no effect on
+actions across four tests.
+
+A more honest split would be: leave the non-combat brain in place, execute the
+situation assessment directly when it has a definite answer, and call the model
+for chat and for genuinely open-ended choices. That is a reversal of the module's
+premise, so it is recorded here rather than acted on.
