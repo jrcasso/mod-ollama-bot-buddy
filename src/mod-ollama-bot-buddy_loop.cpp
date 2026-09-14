@@ -2597,6 +2597,26 @@ namespace
     };
 
     std::unordered_map<uint64_t, uint32> g_nextQuirkTime;
+
+    // Reactions to a real player walking past. Bots emote into empty space on
+    // their own; noticing someone is what actually reads as a person. Same
+    // faction gets a greeting, the other faction gets what the other faction
+    // has always got.
+    uint32 const kFriendlyEmotes[] =
+    {
+        EMOTE_ONESHOT_WAVE, EMOTE_ONESHOT_WAVE, EMOTE_ONESHOT_WAVE,
+        EMOTE_ONESHOT_SALUTE, EMOTE_ONESHOT_BOW, EMOTE_ONESHOT_CHEER,
+        EMOTE_ONESHOT_APPLAUD, EMOTE_ONESHOT_TALK, EMOTE_ONESHOT_POINT
+    };
+    uint32 const kHostileEmotes[] =
+    {
+        EMOTE_ONESHOT_RUDE, EMOTE_ONESHOT_RUDE,
+        EMOTE_ONESHOT_ROAR, EMOTE_ONESHOT_FLEX,
+        EMOTE_ONESHOT_LAUGH, EMOTE_ONESHOT_POINT
+    };
+
+    // Separate, longer cooldown so a bot does not spam the same passer-by.
+    std::unordered_map<uint64_t, uint32> g_nextSocialTime;
 }
 
 static void ApplyHumanMovement(Player* bot)
@@ -2622,6 +2642,47 @@ static void ApplyHumanMovement(Player* bot)
     if (it != g_nextQuirkTime.end() && now < it->second) return;
 
     HumanQuirk const q = QuirkFor(bot);
+
+    // Notice a real player nearby first: reacting to someone beats fidgeting.
+    {
+        auto socialIt = g_nextSocialTime.find(guid);
+        if (socialIt == g_nextSocialTime.end() || now >= socialIt->second)
+        {
+            Player* nearby = nullptr;
+            float nearest = 18.0f;
+
+            for (auto const& itr : ObjectAccessor::GetPlayers())
+            {
+                Player* other = itr.second;
+                if (!other || other == bot || !other->IsInWorld() || !other->IsAlive()) continue;
+                // Real people only: bots greeting each other endlessly is noise.
+                if (!other->GetSession() || other->GetSession()->IsBot()) continue;
+                if (!bot->IsWithinDistInMap(other, nearest)) continue;
+                if (!bot->IsWithinLOS(other->GetPositionX(), other->GetPositionY(), other->GetPositionZ())) continue;
+
+                nearest = bot->GetDistance(other);
+                nearby = other;
+            }
+
+            if (nearby)
+            {
+                g_nextSocialTime[guid] = now + 45000 + urand(0, 60000);
+
+                bool hostile = bot->GetTeamId() != nearby->GetTeamId();
+                uint32 const* table = hostile ? kHostileEmotes : kFriendlyEmotes;
+                size_t count = hostile ? (sizeof(kHostileEmotes) / sizeof(kHostileEmotes[0]))
+                                       : (sizeof(kFriendlyEmotes) / sizeof(kFriendlyEmotes[0]));
+
+                // Face them, then emote: an emote aimed at nobody looks broken.
+                bot->SetFacingToObject(nearby);
+                bot->HandleEmoteCommand(table[urand(0, count - 1)]);
+
+                g_nextQuirkTime[guid] = now + q.minGapMs;
+                return;
+            }
+        }
+    }
+
     g_nextQuirkTime[guid] = now + q.minGapMs + urand(0, q.minGapMs);
 
     uint32 roll = urand(0, 99);
@@ -2709,6 +2770,7 @@ static void SweepStaleBotState()
     prune(ollamaBotPlans);
     prune(ollamaPrefetchedPlans);
     prune(g_nextQuirkTime);
+    prune(g_nextSocialTime);
 
     for (auto it = ollamaTakenOver.begin(); it != ollamaTakenOver.end(); )
         it = (live.find(*it) == live.end()) ? ollamaTakenOver.erase(it) : std::next(it);
