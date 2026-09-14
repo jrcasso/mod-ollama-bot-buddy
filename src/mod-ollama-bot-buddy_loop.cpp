@@ -334,10 +334,76 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
         else if (type == "spell")
         {
             if (params.contains("spellid")) {
+                uint32 spellId = params["spellid"].get<uint32_t>();
                 command.type = BotControlCommandType::CastSpell;
-                command.args = { std::to_string(params["spellid"].get<uint32_t>()) };
+                command.args = { std::to_string(spellId) };
+
                 if (params.contains("guid"))
+                {
                     command.args.push_back(std::to_string(params["guid"].get<uint32_t>()));
+                }
+                else
+                {
+                    // The model reliably attaches a guid to "attack" but never to
+                    // "spell" -- measured 0/12 even when the prompt named the
+                    // target explicitly and the guid was in the enum. An untargeted
+                    // spell falls back to self, so a healer would heal itself while
+                    // the tank died.
+                    //
+                    // Rather than keep fighting the model, resolve the obvious
+                    // target here: a healing spell with no target goes to the
+                    // group member who most needs it.
+                    bool isHeal = false;
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+                    {
+                        for (int i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                        {
+                            uint32 eff = info->Effects[i].Effect;
+                            if (eff == SPELL_EFFECT_HEAL || eff == SPELL_EFFECT_HEAL_MAX_HEALTH ||
+                                eff == SPELL_EFFECT_HEAL_MECHANICAL)
+                            {
+                                isHeal = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (isHeal)
+                    {
+                        Player* weakest = nullptr;
+                        float weakestPct = 100.0f;
+
+                        if (Group* group = bot->GetGroup())
+                        {
+                            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                            {
+                                Player* member = ref->GetSource();
+                                if (!member || !member->IsAlive() || !member->GetMaxHealth()) continue;
+                                if (!bot->IsWithinDistInMap(member, 40.0f)) continue;
+
+                                float pct = (100.0f * member->GetHealth()) / member->GetMaxHealth();
+                                if (pct < weakestPct)
+                                {
+                                    weakestPct = pct;
+                                    weakest = member;
+                                }
+                            }
+                        }
+
+                        // Only redirect if someone is actually worse off than the
+                        // caster; otherwise self-cast was the right call anyway.
+                        float selfPct = bot->GetMaxHealth()
+                            ? (100.0f * bot->GetHealth()) / bot->GetMaxHealth() : 100.0f;
+
+                        if (weakest && weakest != bot && weakestPct < selfPct)
+                        {
+                            command.args.push_back(std::to_string(weakest->GetGUID().GetCounter()));
+                            LOG_DEBUG("server.loading",
+                                      "[OllamaBotBuddy] Untargeted heal redirected to '{}' at {:.0f}%",
+                                      weakest->GetName(), weakestPct);
+                        }
+                    }
+                }
             } else {
                 LOG_ERROR("server.loading", "[OllamaBotBuddy] spell missing spellid");
                 return false;
