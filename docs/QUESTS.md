@@ -62,3 +62,27 @@ native AI it replaces. This has not been measured and should not be asserted
 without measuring it. A fair test would compare quest reward rate for the same
 bots with and without takeover over a fixed window, which needs the takeover set
 held stable for long enough to accumulate rewards.
+
+## Do not measure questing with character_queststatus_rewarded
+
+An A/B run of 31 LLM-controlled bots against 469 native ones over 30 minutes
+appeared to show the native AI completing quests 7.6 times faster. That number is
+an artifact and should not be repeated.
+
+115 of the 116 rewards came from just 7 bots, all of which had an identical
+`leveltime` of about 901 seconds and five of which were offline by the end of the
+window. That is `RandomPlayerbotMgr` rotating bots between level brackets, with
+`PlayerbotFactory` granting quest history in bulk as part of re-randomising a
+character. It is not gameplay.
+
+With those seven excluded, the taken-over group produced one genuine turn-in
+(Evelista, level 3) and the native group produced none, which points the other
+way and is equally meaningless at that sample size. Counting bots that gained
+anything rather than totals: 1 observed among the taken-over bots against 0.46
+expected from the native rate, so no deficit is detectable either.
+
+**The question of whether takeover harms play remains open.** A valid design needs
+a metric immune to rotation: exclude any bot whose level or `leveltime` changed
+during the window, or measure something behavioural from the server log instead
+of a cumulative DB counter. It also needs a longer window, because organic
+turn-ins are rare enough that 30 minutes over 500 bots yielded a single one.
