@@ -61,3 +61,35 @@ far slower than a fight moves anyway.
 The cheapest first step is to stop disabling ApplyHumanMovement in battlegrounds
 and combat, which would at least remove the "statue in a fight" look, and measure
 whether it causes the combat brain any trouble.
+
+## What changed (iteration 35)
+
+The blanket exclusions are gone. `ApplyHumanMovement` no longer returns early on
+`InBattleground()`/`InArena()`, and combat now restricts *which* quirk may fire
+rather than refusing all of them:
+
+* **Never in combat:** `SetFacingTo` and `SetFacingToObject`. Turning away from a
+  target stops melee swings and breaks directional spells, and the social
+  greeting path ends in exactly that, so it is skipped while fighting.
+* **Allowed in combat:** a hop in place, weighted 3:1 over an emote. Both are
+  what a player does between globals, and neither changes facing or position.
+
+The `WorldSession::IsBot()` check still comes first, before any of this, so none
+of it can reach a real player's character.
+
+Measured over 10 minutes with no takeover: 32 quest rewards against a 36 baseline,
+bot corpses 8 to 12, no crashes, tick 104-126ms, CPU 300%. Nothing regressed.
+
+### Known limitation, not yet measured
+
+The function still requires the bot to be idle:
+
+    if (bot->isMoving()) return;
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE) return;
+
+A bot fighting in melee is usually running a chase generator, which is not
+IDLE_MOTION_TYPE, so the in-combat hop may rarely fire in practice. The
+battleground half is solid -- a bot standing at a flag out of combat is idle and
+will now fidget where it previously could not -- but "bots visibly hop mid-fight"
+is **unverified**, and the idle guard is the first thing to examine if they still
+look static in a fight.

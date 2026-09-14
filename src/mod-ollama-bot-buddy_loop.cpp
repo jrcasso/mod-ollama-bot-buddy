@@ -2961,8 +2961,18 @@ static void ApplyHumanMovement(Player* bot)
     // player's own character and spins it, which is exactly as alarming as it
     // sounds. WorldSession::IsBot() is the authoritative test.
     if (!bot->GetSession() || !bot->GetSession()->IsBot()) return;
-    if (bot->IsInCombat()) return;
-    if (bot->InBattleground() || bot->InArena()) return;
+
+    // Combat and battlegrounds used to be excluded outright, which made bots
+    // motionless in exactly the places players move most. A player in a
+    // battleground is never still: they hop, they shuffle, they emote at the
+    // enemy across the flag room.
+    //
+    // Combat still restricts WHICH quirks may fire, because one of them is
+    // genuinely unsafe there: SetFacingTo turns the bot away from its target,
+    // which stops melee swings and breaks directional spells. Hops and emotes do
+    // neither. The idle checks below already guarantee this never competes with a
+    // chase or charge generator, since those are not IDLE_MOTION_TYPE.
+    bool const inCombat = bot->IsInCombat();
 
     // Idle only: anything else means a movement generator owns this bot.
     if (bot->isMoving()) return;
@@ -2978,8 +2988,10 @@ static void ApplyHumanMovement(Player* bot)
 
     // Notice a real player nearby first: reacting to someone beats fidgeting.
     {
+        // Not while fighting: this ends in SetFacingToObject, which is the very
+        // thing that must not happen mid-combat.
         auto socialIt = g_nextSocialTime.find(guid);
-        if (socialIt == g_nextSocialTime.end() || now >= socialIt->second)
+        if (!inCombat && (socialIt == g_nextSocialTime.end() || now >= socialIt->second))
         {
             Player* nearby = nullptr;
             float nearest = 18.0f;
@@ -3019,6 +3031,21 @@ static void ApplyHumanMovement(Player* bot)
     g_nextQuirkTime[guid] = now + q.minGapMs + urand(0, q.minGapMs);
 
     uint32 roll = urand(0, 99);
+
+    if (inCombat)
+    {
+        // Fighting: shuffle or emote, never turn. Weighted towards the hop,
+        // which is what a player actually does between globals.
+        if (urand(0, 3))
+            bot->GetMotionMaster()->MoveJump(bot->GetPositionX(), bot->GetPositionY(),
+                                             bot->GetPositionZ(), 0.1f, 7.0f);
+        else
+        {
+            constexpr size_t kCombatEmoteCount = sizeof(kIdleEmotes) / sizeof(kIdleEmotes[0]);
+            bot->HandleEmoteCommand(kIdleEmotes[urand(0, kCombatEmoteCount - 1)]);
+        }
+        return;
+    }
 
     if (roll < q.hopChance)
     {
