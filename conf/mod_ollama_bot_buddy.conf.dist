@@ -30,3 +30,23 @@ OllamaBotControl.Debug = 0
 #     Default:     0 (false)
 #     0 = disabled, 1 = enabled
 OllamaBotControl.EnableBotBuddyAddon = 0
+
+# OllamaBotControl.TestBotCount
+#     Drive this many arbitrary online bots regardless of name or grouping.
+#     Testing only. BotNames silently controls nothing when the named bot has
+#     been rotated out of the world by the level bracket system, which looks
+#     identical to the module being broken. Pair with RequirePlayerOnline = 0,
+#     and put both back afterwards: leaving RequirePlayerOnline = 0 on pins a
+#     multi-GB model in memory and has caused OOM kills.
+#     Default: 0 (disabled)
+OllamaBotControl.TestBotCount = 0
+
+# OllamaBotControl.TestBotFilter
+#     Which bots TestBotCount is allowed to adopt.
+#       any     whichever bots come first. In a 500-bot world that means bots
+#               idling in towns: across 59 captured prompts not one contained a
+#               visible hostile, so combat decisions were never observed.
+#       combat  only bots currently in combat. The slot is released when a bot
+#               leaves combat, so the sample keeps following live fighting.
+#     Default: any
+OllamaBotControl.TestBotFilter = any

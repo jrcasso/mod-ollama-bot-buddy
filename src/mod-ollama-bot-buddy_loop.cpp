@@ -2032,6 +2032,42 @@ static std::string BuildSituationAssessment(Player* bot, float radius = 100.0f)
         }
     }
 
+    // 1b. Being attacked with nothing selected.
+    //
+    // This was the single largest gap in the assessment, and it stayed hidden
+    // for a long time because the test hook adopted whichever bots came first,
+    // which in a 500-bot world means bots idling in towns. Once TestBotFilter
+    // could restrict the sample to bots actually fighting, the problem was
+    // immediate: replaying six real combat situations from the live server, bots
+    // under attack chose move_to 18/18 and attacked their attacker 0/18.
+    //
+    // The combat summary does name the attacker, near the top of the prompt, but
+    // that position is ignored. Stating it here, where the assessment is read,
+    // takes it to 18/18.
+    //
+    // hpPct > 30 keeps this out of the way of the survival branch above, which
+    // has already told a badly hurt bot to defend or disengage. GetVictim() means
+    // a bot already swinging at something is left alone.
+    if (bot->IsInCombat() && hpPct > 30 && !bot->GetVictim())
+    {
+        Creature* attacker = nullptr;
+        for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
+        {
+            Creature* c = pair.second;
+            if (!c) continue;
+            if (c->GetVictim() == bot) { attacker = c; break; }
+        }
+
+        if (attacker)
+        {
+            uint32 aguid = attacker->GetGUID().GetCounter();
+            oss << "SITUATION: " << attacker->GetName() << " (guid " << aguid
+                << ") is attacking you and is " << uint32(bot->GetDistance(attacker))
+                << " yards away. Fight back: attack guid " << aguid
+                << " now. Do not move away.\n";
+        }
+    }
+
     // 2. Things already in reach, so moving is wasted effort.
     //
     // Measured: with a lootable corpse 3 yards away the model chose move_to or
@@ -3178,11 +3214,26 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             if (!selected && g_OllamaTestBotCount > 0)
             {
                 uint64_t tk = bot->GetGUID().GetRawValue();
+
+                // Adopting whichever bots come first samples whatever most of
+                // the 500 are doing, which is standing in a town. Across 59
+                // prompts captured that way, not one had a visible hostile, so
+                // target selection and combat decisions were never actually
+                // observed. "combat" narrows the sample to bots that are
+                // fighting, and hands the slot back when they stop, so the
+                // sample keeps following live combat instead of freezing on
+                // whoever happened to be fighting first.
+                bool const wantCombat = (g_OllamaTestBotFilter == "combat");
+                bool const eligible   = !wantCombat || bot->IsInCombat();
+
                 if (testAdoptedBots.count(tk))
                 {
-                    selected = true;
+                    if (wantCombat && !eligible)
+                        testAdoptedBots.erase(tk);
+                    else
+                        selected = true;
                 }
-                else if (testAdoptedBots.size() < g_OllamaTestBotCount)
+                else if (eligible && testAdoptedBots.size() < g_OllamaTestBotCount)
                 {
                     testAdoptedBots.insert(tk);
                     selected = true;

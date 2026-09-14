@@ -24,6 +24,12 @@ extern bool        g_OllamaRequirePlayerOnline;
 // rotated out of the world by the level bracket system, which is easy to do and
 // looks exactly like the module being broken.
 extern uint32      g_OllamaTestBotCount;
+// "any" adopts whichever bots come first, which in a 500-bot world means bots
+// idling in towns: across 59 captured prompts not one contained a visible
+// hostile, so combat decisions had never been observed in production at all.
+// "combat" restricts adoption to bots actually fighting, and releases the slot
+// when they stop, so the sample keeps tracking live combat.
+extern std::string g_OllamaTestBotFilter;
 
 class OllamaBotControlConfigWorldScript : public WorldScript
 {
