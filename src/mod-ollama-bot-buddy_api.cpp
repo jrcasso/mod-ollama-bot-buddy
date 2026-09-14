@@ -349,9 +349,11 @@ namespace BotBuddyAI
             // Handle new quests that can be accepted
             else if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
             {
-                // Accept the quest using the playerbot action system
-                AcceptQuest(bot, menuItem.QuestId);
-                foundQuestAction = true;
+                // Only claim the turn if the quest was really accepted. Setting
+                // this unconditionally is what made a permanently failing accept
+                // look like success and left bots looping on the same giver.
+                if (AcceptQuest(bot, menuItem.QuestId))
+                    foundQuestAction = true;
                 
                 if (g_EnableOllamaBotBuddyDebug)
                 {
@@ -424,8 +426,8 @@ namespace BotBuddyAI
             }
             else if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
             {
-                AcceptQuest(bot, menuItem.QuestId);
-                return true;
+                // Same rule as above: report whether it was actually accepted.
+                return AcceptQuest(bot, menuItem.QuestId);
             }
         }
 
@@ -627,17 +629,71 @@ namespace BotBuddyAI
 
     bool AcceptQuest(Player* bot, uint32 questId)
     {
-        if (!bot) return false;
-        
-        PlayerbotAI* ai = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
-        if (!ai) return false;
-        
+        if (!bot || !bot->GetMap()) return false;
+
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         if (!quest) return false;
 
-        // Use the playerbot AI system to handle quest acceptance
-        Event event = Event("", std::to_string(questId));
-        return ai->DoSpecificAction("accept quest", event);
+        // This used to delegate to the playerbot AI:
+        //
+        //     Event event = Event("", std::to_string(questId));
+        //     return ai->DoSpecificAction("accept quest", event);
+        //
+        // which can never work for a random bot. AcceptQuestAction::Execute
+        // begins with
+        //
+        //     Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
+        //     if (!requester) return false;
+        //
+        // The event built above has no owner and a random bot has no master, so
+        // it returned false on its first line, every time. Callers then threw the
+        // result away, so a quest that was never accepted looked accepted.
+        //
+        // Observed live: a level 26 draenei stood at Megelon for 30 minutes,
+        // across 15 decisions, told each time that a quest giver was one yard
+        // away, interacting each time, reporting no failure, and ending with
+        // zero rows in character_queststatus.
+        //
+        // Accept it the way the core does for CMSG_QUESTGIVER_ACCEPT_QUEST:
+        // find the giver in range, re-check, then AddQuestAndCheckCompletion.
+        if (bot->GetQuestStatus(questId) != QUEST_STATUS_NONE) return false;
+        if (!bot->CanTakeQuest(quest, false)) return false;
+        if (!bot->CanAddQuest(quest, false)) return false;
+
+        Object* giver = nullptr;
+        for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
+        {
+            Creature* c = pair.second;
+            if (!c || !c->hasQuest(questId)) continue;
+            if (!bot->IsWithinDistInMap(c, INTERACTION_DISTANCE)) continue;
+            giver = c;
+            break;
+        }
+        if (!giver)
+        {
+            for (auto const& pair : bot->GetMap()->GetGameObjectBySpawnIdStore())
+            {
+                GameObject* go = pair.second;
+                if (!go || !go->hasQuest(questId)) continue;
+                if (!bot->IsWithinDistInMap(go, INTERACTION_DISTANCE)) continue;
+                giver = go;
+                break;
+            }
+        }
+        if (!giver) return false;
+
+        bot->AddQuestAndCheckCompletion(quest, giver);
+
+        // Report what happened rather than that we tried. This half is what kept
+        // the failure invisible.
+        bool const accepted = bot->GetQuestStatus(questId) != QUEST_STATUS_NONE;
+        if (g_EnableOllamaBotBuddyDebug && !accepted)
+        {
+            LOG_INFO("server.loading",
+                     "[OllamaBotBuddy] Bot {} failed to accept quest {}",
+                     bot->GetName(), questId);
+        }
+        return accepted;
     }
 
     bool TurnInQuest(Player* bot, uint32 questId)

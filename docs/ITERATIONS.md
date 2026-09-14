@@ -42,6 +42,7 @@ and PERSONAS rows). The code changes themselves stand.
 | 25 | Efficacy | Situation branch for visible quest objectives (`88f1d77`) | The existing warning sat at 18% depth, the ignored position | Replay on real prompts | **0/16 → 16/16**. *Not* observed firing in production |
 | 26 | Efficacy | Correct the quest analysis (`8e21322`) | Read `status` backwards: COMPLETE=1, INCOMPLETE=3 | DB + enum in `QuestDef.h` | Retracted two claims. Kill quests are **30%**, not 3.4%. Quest progression healthy: 5,724 rewards, avg level 44.5 |
 | 27 | Efficacy | A/B: does takeover make bots worse at questing? | Takeover permanently wipes the non-combat brain (`ClearStrategies(BOT_STATE_NON_COMBAT)`), which is what quests | 31 bots taken over vs 469 native, 30 min, quest rewards | **Inconclusive — metric invalid.** `character_queststatus_rewarded` is contaminated by bot re-randomisation. No evidence of harm; hypothesis still open |
+| 28 | Efficacy | Accept quests through the core API instead of a playerbot action (`AcceptQuest`) | `AcceptQuestAction::Execute` returns false on its first line for a bot with no master, and callers discarded the result, so a quest never accepted looked accepted | 30 bots taken over, 15 min, `character_queststatus` deltas | **0 accepts in 30 min → 5 accepts by 4 bots in 15 min.** Live proof: a level-26 draenei had sat at Megelon for 15 decisions with 0 quest rows |
 
 ## Recurring lessons
 
@@ -52,6 +53,9 @@ and PERSONAS rows). The code changes themselves stand.
   `QUEST TARGET` vs `[QUEST TARGET -` each produced a wrong conclusion.
 * **Behaviour never sampled is behaviour never verified.** Combat and grouping
   were both invisible until the sampling was fixed.
+* **A discarded return value hides a permanent failure.** `AcceptQuest` had never
+  worked for a random bot, and nothing reported it, because the caller set
+  `foundQuestAction = true` whatever happened.
 * **Validate the metric, not just the result.** The takeover A/B produced a clean
   looking "native AI is 7.6x better" that was an artifact: 115 of 116 rewards came
   from 7 bots that `RandomPlayerbotMgr` had just re-randomised (identical
