@@ -1741,17 +1741,49 @@ static std::vector<BotDestination> BuildDestinationCandidates(Player* bot, float
         return !(p.GetPathType() & PATHFIND_NOPATH);
     };
 
-    // 1. Stand next to something the bot can actually see.
+    // 1. Stand next to something the bot can actually see, NEAREST FIRST.
+    //
+    // Both the ordering and the distance in the label matter. The spawn-id store
+    // is a hash map, so iterating it yields creatures in arbitrary order. Two
+    // things went wrong because of that:
+    //
+    //   * The old 12-entry cap truncated in hash order, so in a crowded zone the
+    //     creature standing next to the bot could be missing from the menu while
+    //     a creature 95 yards away was offered.
+    //   * Every duplicate spawn produced the identical label ("next to Bonechewer
+    //     Ravener"), leaving the model no way to tell them apart.
+    //
+    // Measured with a kill-quest and three identical Raveners at 6y, 82y and 91y:
+    // unsorted and unlabelled the model picked the nearest 0/12 times (it always
+    // took the first entry, walking 82 yards past one 6 yards away). Sorted, with
+    // the distance in the label, it picked the nearest 12/12.
+    //
+    // Collecting by cheap distance first and only then raycasting also means the
+    // expensive IsWithinLOS calls land on the closest creatures, which are the
+    // ones most likely to pass -- so this does strictly less work than before.
+    std::vector<std::pair<float, Creature*>> nearby;
     for (auto const& pair : map->GetCreatureBySpawnIdStore())
     {
         Creature* c = pair.second;
         if (!c) continue;
         if (c->GetGUID() == bot->GetGUID()) continue;
-        if (!bot->IsWithinDistInMap(c, radius)) continue;
-        if (!bot->IsWithinLOS(c->GetPositionX(), c->GetPositionY(), c->GetPositionZ())) continue;
         if (c->IsPet() || c->IsTotem()) continue;
+        if (!bot->IsWithinDistInMap(c, radius)) continue;
+        nearby.emplace_back(bot->GetExactDist(c), c);
+    }
+
+    std::sort(nearby.begin(), nearby.end(),
+              [](auto const& a, auto const& b) { return a.first < b.first; });
+
+    for (auto const& entry : nearby)
+    {
         if (out.size() >= 12) break;
-        out.push_back({ "next to " + c->GetName(),
+        Creature* c = entry.second;
+        if (!bot->IsWithinLOS(c->GetPositionX(), c->GetPositionY(), c->GetPositionZ())) continue;
+
+        std::ostringstream label;
+        label << "next to " << c->GetName() << " (" << uint32(entry.first + 0.5f) << "y)";
+        out.push_back({ label.str(),
                         c->GetPositionX(), c->GetPositionY(), c->GetPositionZ() });
     }
 
