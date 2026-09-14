@@ -43,6 +43,7 @@ and PERSONAS rows). The code changes themselves stand.
 | 26 | Efficacy | Correct the quest analysis (`8e21322`) | Read `status` backwards: COMPLETE=1, INCOMPLETE=3 | DB + enum in `QuestDef.h` | Retracted two claims. Kill quests are **30%**, not 3.4%. Quest progression healthy: 5,724 rewards, avg level 44.5 |
 | 27 | Efficacy | A/B: does takeover make bots worse at questing? | Takeover permanently wipes the non-combat brain (`ClearStrategies(BOT_STATE_NON_COMBAT)`), which is what quests | 31 bots taken over vs 469 native, 30 min, quest rewards | **Inconclusive — metric invalid.** `character_queststatus_rewarded` is contaminated by bot re-randomisation. No evidence of harm; hypothesis still open |
 | 28 | Efficacy | Accept quests through the core API instead of a playerbot action (`AcceptQuest`) | `AcceptQuestAction::Execute` returns false on its first line for a bot with no master, and callers discarded the result, so a quest never accepted looked accepted | 30 bots taken over, 15 min, `character_queststatus` deltas | **0 accepts in 30 min → 5 accepts by 4 bots in 15 min.** Live proof: a level-26 draenei had sat at Megelon for 15 decisions with 0 quest rows |
+| 29 | Efficacy | Tried to repair looting under takeover by repopulating the loot stack; **reverted** | 9% of prompts reported "loot did not execute"; takeover wipes the non-combat "loot" strategy that fills the stack | 30 bots, ~25 min, failure rate vs a 336-prompt baseline | **No effect: 8.6% → 10.1%.** Looting is a 4-stage pipeline (add / select / approach / open) and the module only ever calls *select*, so filling the stack cannot help. Change reverted |
 
 ## Recurring lessons
 
@@ -53,6 +54,10 @@ and PERSONAS rows). The code changes themselves stand.
   `QUEST TARGET` vs `[QUEST TARGET -` each produced a wrong conclusion.
 * **Behaviour never sampled is behaviour never verified.** Combat and grouping
   were both invisible until the sampling was fixed.
+* **Takeover removes machinery, not just behaviour.** `ClearStrategies(BOT_STATE_NON_COMBAT)`
+  deletes the strategies that populate values and drive multi-step pipelines. Two
+  separate bugs (quest accept, looting) both trace to delegated playerbot actions
+  whose preconditions that strategy used to satisfy.
 * **A discarded return value hides a permanent failure.** `AcceptQuest` had never
   worked for a random bot, and nothing reported it, because the caller set
   `foundQuestAction = true` whatever happened.

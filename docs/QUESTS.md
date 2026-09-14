@@ -86,3 +86,38 @@ a metric immune to rotation: exclude any bot whose level or `leveltime` changed
 during the window, or measure something behavioural from the server log instead
 of a cumulative DB counter. It also needs a longer window, because organic
 turn-ins are rare enough that 30 minutes over 500 bots yielded a single one.
+
+## Looting under takeover is a four-stage pipeline, and we only call stage two
+
+`LootNearby` calls `ai->DoSpecificAction("loot", ...)`, which fails for bots under
+takeover. 29 of 336 captured prompts, 8.6%, reported "loot did not execute".
+
+`LootAction::Execute` returns false unless `AI_VALUE(bool, "has available loot")`,
+and that is
+
+    !AI_VALUE(bool, "can loot") && available_loot->CanLoot(lootDistance)
+
+The stack behind `available loot` is a `ManualSetValue`: it does not compute
+itself, something has to `Add()` to it. Normally `LootNonCombatStrategy` does,
+and that strategy lives in the non-combat engine, which takeover deletes with
+`ClearStrategies(BOT_STATE_NON_COMBAT)`.
+
+Filling the stack from the module was tried and **did not work**: the failure rate
+went 8.6% to 10.1%, i.e. unchanged. The reason is that `LootNonCombatStrategy`
+runs four separate stages, and only the second is what `LootNearby` invokes:
+
+    often                  -> add all loot     populate the stack
+    loot available         -> loot             SELECT a target   <- the only one we call
+    far from loot target   -> move to loot     approach it
+    can loot               -> open loot        actually loot it
+
+So `"loot"` only ever *selects* a corpse; `"open loot"` is what loots it. That also
+explains the `!can loot` inversion above: selection is gated off once a target
+exists.
+
+A real fix has to drive the whole pipeline from the module: pick the nearest
+corpse the bot has loot rights to, set it as the loot target, and call
+`"open loot"` when inside `INTERACTION_DISTANCE - 2`. The situation assessment
+already only mentions corpses within 6 yards, so the approach stage is usually
+unnecessary. That was not attempted here because it is a larger change than one
+measured variable.
