@@ -15,6 +15,7 @@ std::string g_OllamaTestBotFilter = "any";
 bool g_OllamaClearNonCombat = true;
 bool g_OllamaDeterministicActions = true;
 bool g_OllamaCombatStrafe = true;
+uint32 g_OllamaSayCooldownSeconds = 240;
 
 OllamaBotControlConfigWorldScript::OllamaBotControlConfigWorldScript() : WorldScript("OllamaBotControlConfigWorldScript") {}
 
@@ -34,4 +35,5 @@ void OllamaBotControlConfigWorldScript::OnStartup()
     g_OllamaClearNonCombat = sConfigMgr->GetOption<bool>("OllamaBotControl.ClearNonCombatStrategies", true);
     g_OllamaDeterministicActions = sConfigMgr->GetOption<bool>("OllamaBotControl.DeterministicActions", true);
     g_OllamaCombatStrafe = sConfigMgr->GetOption<bool>("OllamaBotControl.CombatStrafe", true);
+    g_OllamaSayCooldownSeconds = sConfigMgr->GetOption<uint32>("OllamaBotControl.SayCooldownSeconds", 240);
 }

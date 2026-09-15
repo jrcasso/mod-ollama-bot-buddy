@@ -93,9 +93,18 @@ Three faults, all separate from the plumbing:
 2. **It is homogeneous.** The persona differences measured above do not survive
    into production speech, plausibly because the weighting is deliberately ~72%
    ordinary dispositions, whose voices are bland by design.
-3. **It is constant.** 88 lines from 89 decisions. Players do not announce every
-   action, and a party of bots narrating each other's quest-giver clicks would be
-   worse than silence.
+3. ~~**It is constant.** 88 lines from 89 decisions.~~ **Fixed in iteration 39.**
+   A per-bot cooldown of 240 seconds, jittered up to double, plus a 30-yard
+   earshot check, took this from 98.9% of decisions to 11.5% -- about one line per
+   bot per ten minutes. Both inputs are exact server-side facts, so this is code,
+   not a prompt instruction asking the model to be tastefully quiet.
 
-Fixing the wording, the rate, and the persona carry-through are prompt changes and
-should be measured separately against captured prompts, one at a time.
+The rate is fixed. The remaining two -- wording and persona carry-through -- are
+genuinely prompt changes and should be measured separately against captured
+prompts, one at a time.
+
+Worth noting for whoever takes the wording: the instruction already says `"say"
+must be what your character would say in-game to players`, and the model returns a
+status report anyway. That is the same pattern as every other instruction in this
+module that sits outside the situation block, so check where it lives in the
+prompt before rewriting it.

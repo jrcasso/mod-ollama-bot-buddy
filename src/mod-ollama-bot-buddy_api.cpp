@@ -618,6 +618,46 @@ namespace BotBuddyAI
         // about what it does. The generated text was the whole justification for
         // the inference call, and it was being dropped on the floor.
         //
+        // Rate limit, and only speak where someone could hear it.
+        //
+        // With the plumbing fixed the volume was the problem: 88 lines from 89
+        // decisions, every bot narrating every action. Real players do not
+        // announce that they are about to click a quest giver, and a party of
+        // bots doing it in unison is worse than silence.
+        //
+        // This is deliberately code rather than a prompt instruction. Whether to
+        // speak now is a cooldown and a proximity check, both of which the server
+        // can answer exactly; asking a 7B model to be tastefully quiet is neither
+        // reliable nor necessary.
+        //
+        // Called only from ParseAndExecuteBotJson, which runs on the world
+        // thread, so a plain static map needs no lock.
+        {
+            static std::unordered_map<uint64_t, time_t> nextSay;
+            uint64_t const key = bot->GetGUID().GetRawValue();
+            time_t const now = time(nullptr);
+
+            auto it = nextSay.find(key);
+            if (it != nextSay.end() && now < it->second)
+                return false;
+
+            // Nobody in earshot means the line is wasted. Say carries about 30
+            // yards, which is what mod-ollama-chat uses for the same decision.
+            bool heard = false;
+            for (auto const& itr : ObjectAccessor::GetPlayers())
+            {
+                Player* other = itr.second;
+                if (!other || other == bot || !other->IsInWorld()) continue;
+                if (bot->IsWithinDistInMap(other, 30.0f)) { heard = true; break; }
+            }
+            if (!heard)
+                return false;
+
+            // Jittered so a crowd of bots does not fall into lockstep.
+            uint32 const base = g_OllamaSayCooldownSeconds;
+            nextSay[key] = now + time_t(base + urand(0, base));
+        }
+
         // PlayerbotAI::Say is the API for this, and it is what mod-ollama-chat
         // uses. It picks the faction language and calls Player::Say.
         bool const said = ai->Say(msg);

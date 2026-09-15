@@ -56,6 +56,12 @@ extern bool g_OllamaDeterministicActions;
 // band, line of sight and cast state are all known server-side.
 extern bool g_OllamaCombatStrafe;
 
+// Minimum seconds between two things a bot says out loud, jittered so a crowd
+// does not speak in lockstep. Measured before adding this: 88 lines from 89
+// decisions, i.e. a bot narrated essentially every action it took. When to open
+// your mouth is a cooldown, not a judgement, so it lives in code.
+extern uint32 g_OllamaSayCooldownSeconds;
+
 class OllamaBotControlConfigWorldScript : public WorldScript
 {
 public:

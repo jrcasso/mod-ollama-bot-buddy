@@ -75,3 +75,10 @@ OllamaBotControl.DeterministicActions = 1
 #     would cancel it).
 #     Default: 1 (enabled)
 OllamaBotControl.CombatStrafe = 1
+
+# OllamaBotControl.SayCooldownSeconds
+#     Minimum seconds between two things a bot says out loud, jittered up to
+#     double so a crowd does not speak in lockstep. A bot also stays quiet when
+#     nobody is within about 30 yards to hear it.
+#     Default: 240
+OllamaBotControl.SayCooldownSeconds = 240
