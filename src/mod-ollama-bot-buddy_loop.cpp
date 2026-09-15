@@ -2318,22 +2318,8 @@ static std::string BuildBotPrompt(Player* bot)
         }
     }
 
-    // Personality, sourced from mod-ollama-chat's assignment so speech and
-    // behaviour come from the same disposition.
-    {
-        std::string personalityKey = GetBotPersonalityKey(bot);
-        if (!personalityKey.empty())
-        {
-            std::string traits = ActionTraitsFor(personalityKey);
-            oss << "YOUR PERSONALITY: " << personalityKey << "\n";
-            if (!traits.empty())
-            {
-                oss << "This shapes how you act, not just how you talk:\n";
-                oss << " - " << traits << "\n";
-            }
-            oss << "\n";
-        }
-    }
+    // Personality used to be emitted here, near the top. It now goes at the end
+    // of the prompt instead; see the block just before the situation assessment.
 
     // Destination candidates: computed here (world thread), stored for the
     // reply-handling thread, and listed so the model knows what each index is.
@@ -2748,6 +2734,39 @@ static std::string BuildBotPrompt(Player* bot)
     // because a short synthetic prompt has nothing to bury the line under. Real
     // prompts are ~24,000 characters. Test prompt changes against captured
     // prompts, not hand-written ones.
+    // Personality, sourced from mod-ollama-chat's assignment so speech and
+    // behaviour come from the same disposition.
+    //
+    // Emitted here rather than near the top, where it used to sit at about 1.2%
+    // depth. That is the same position every other instruction in this module was
+    // ignored at, and moving it is the only thing that has improved speech
+    // variety. Replayed on two disjoint sets of captured prompts, 14 prompts by
+    // 3 samples each:
+    //
+    //   persona near the top   distinct 53% and 46%, most-repeated line 6x and 8x
+    //   persona at the end     distinct 82% and 82%, most-repeated line 3x and 2x
+    //
+    // The content changes character too: generic "do you have any quests for me"
+    // gives way to lines that sound like somebody, e.g. "Got your back, mates!"
+    // and "Let's get this over with." Command selection was identical in every
+    // arm, so this moves speech without touching behaviour.
+    //
+    // Deliberately before the situation assessment, which stays last: that block
+    // is load-bearing (0/66 to 66/66) and nothing should displace it.
+    {
+        std::string personalityKey = GetBotPersonalityKey(bot);
+        if (!personalityKey.empty())
+        {
+            std::string traits = ActionTraitsFor(personalityKey);
+            oss << "\nYOUR PERSONALITY: " << personalityKey << "\n";
+            if (!traits.empty())
+            {
+                oss << "This shapes how you act, not just how you talk:\n";
+                oss << " - " << traits << "\n";
+            }
+        }
+    }
+
     oss << "\n" << BuildSituationAssessment(bot);
 
     return oss.str();

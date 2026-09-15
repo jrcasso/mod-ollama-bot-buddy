@@ -61,3 +61,23 @@ Three consequences worth keeping:
 A replay of 4 situations x 2 placements x 4 base prompts x 3 samples is about 96
 requests, roughly 5 minutes. Inference capacity is ~0.2 decisions/second (see
 docs/INFERENCE-CAPACITY.md), so keep sample counts modest and vary ONE thing.
+
+## A monitoring trap introduced by the speech log
+
+Iteration 38 added a debug line that prints what each bot says. That text is now
+model-generated and varied, which means a crash check written as
+
+    grep -ciE 'crash|ASSERTION|SIGSEGV' Server.log
+
+can match a bot's dialogue. During iteration 42 that check returned 16 on a log
+that showed `restarts=0`, no `Aborted`, no `Segmentation fault`, no `core dumped`,
+and a server that never went down. The log rotated on restore before the lines
+could be read, so what they actually were is **unknown** -- bot speech is the
+likely explanation but it was not verified.
+
+Use an exclusion when checking for crashes on a server running this module:
+
+    grep -iE 'crash|ASSERTION|SIGSEGV' Server.log | grep -v 'OllamaBotBuddy'
+
+and corroborate with the unambiguous markers (`Aborted`, `terminate called`,
+`Segmentation fault`, `core dumped`) plus the container's restart count.

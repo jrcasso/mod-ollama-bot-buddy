@@ -113,6 +113,24 @@ Three faults, all separate from the plumbing:
    Every instruction added to that block pushes the model further toward the
    "or nothing at all" escape hatch. Whatever fixes variety will probably not be
    another sentence in the same paragraph.
+
+   **Iteration 42 found what does: moving the persona block itself.** It sat at
+   about 1.2% depth, the same position every other instruction in this module was
+   ignored at. Emitting it at the end instead, replayed on two disjoint sets of
+   captured prompts:
+
+       persona near the top   distinct 53% and 46%,  most-repeated 6x and 8x
+       persona at the end     distinct 82% and 82%,  most-repeated 3x and 2x
+
+   Confirmed in production: persona depth 1.2% to 99.4%, and eight spoken lines
+   that were eight distinct lines. The register changes as well as the variety --
+   "Got your back, mates!", "Let's get this over with.", "Time to take care of
+   this vermin." instead of a queue of identical greetings. Command selection was
+   identical in every arm, so this moves speech without touching behaviour.
+
+   Note what this does *not* say: personas still do not change what a bot does.
+   Four tests above establish that, and iteration 42 re-confirms it. Position
+   affects voice, not decisions.
 3. ~~**It is constant.** 88 lines from 89 decisions.~~ **Fixed in iteration 39.**
    A per-bot cooldown of 240 seconds, jittered up to double, plus a 30-yard
    earshot check, took this from 98.9% of decisions to 11.5% -- about one line per
