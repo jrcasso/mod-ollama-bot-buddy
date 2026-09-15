@@ -16,6 +16,7 @@ bool g_OllamaClearNonCombat = true;
 bool g_OllamaDeterministicActions = true;
 bool g_OllamaCombatStrafe = true;
 uint32 g_OllamaSayCooldownSeconds = 240;
+uint32 g_OllamaDuelCooldownSeconds = 3600;
 
 OllamaBotControlConfigWorldScript::OllamaBotControlConfigWorldScript() : WorldScript("OllamaBotControlConfigWorldScript") {}
 
@@ -36,4 +37,5 @@ void OllamaBotControlConfigWorldScript::OnStartup()
     g_OllamaDeterministicActions = sConfigMgr->GetOption<bool>("OllamaBotControl.DeterministicActions", true);
     g_OllamaCombatStrafe = sConfigMgr->GetOption<bool>("OllamaBotControl.CombatStrafe", true);
     g_OllamaSayCooldownSeconds = sConfigMgr->GetOption<uint32>("OllamaBotControl.SayCooldownSeconds", 240);
+    g_OllamaDuelCooldownSeconds = sConfigMgr->GetOption<uint32>("OllamaBotControl.DuelCooldownSeconds", 3600);
 }

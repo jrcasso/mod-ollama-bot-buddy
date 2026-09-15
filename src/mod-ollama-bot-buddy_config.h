@@ -62,6 +62,12 @@ extern bool g_OllamaCombatStrafe;
 // your mouth is a cooldown, not a judgement, so it lives in code.
 extern uint32 g_OllamaSayCooldownSeconds;
 
+// Minimum seconds between one bot challenging another to a duel, jittered to
+// double. 0 disables. Duelling outside a city is one of the most recognisable
+// things on a populated server, and the core already refuses duels inside
+// sanctuaries, so this naturally happens at the gates rather than in the bank.
+extern uint32 g_OllamaDuelCooldownSeconds;
+
 class OllamaBotControlConfigWorldScript : public WorldScript
 {
 public:

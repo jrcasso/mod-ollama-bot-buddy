@@ -3054,6 +3054,70 @@ static void ApplyHumanMovement(Player* bot)
         }
     }
 
+    // Challenge a nearby bot to a duel.
+    //
+    // Duelling outside the city gates is one of the most recognisable things on
+    // a populated realm, and none of the social repertoire existed here at all.
+    // This is entirely deterministic: pick a same-faction bot standing close by
+    // and cast Duel at it. Everything else is already handled by code that is not
+    // ours -- Spell::EffectDuel refuses a duel when either side is already in
+    // one, when the target ignores the caster, or when the zone does not permit
+    // duels, which is why this ends up happening at the gates rather than inside
+    // a sanctuary. The target accepts through mod-playerbots' DuelStrategy, which
+    // lives in the combat engine and so survives takeover, and which declines
+    // below 90% health.
+    if (g_OllamaDuelCooldownSeconds > 0 && !bot->duel)
+    {
+        static std::unordered_map<uint64_t, uint32> nextDuel;
+        auto dit = nextDuel.find(guid);
+
+        // First sight of this bot: give it a random position in the cycle rather
+        // than letting it challenge immediately. Without this every bot is
+        // eligible the moment the server comes up, and they all challenge at
+        // once: measured 80 of 500 players duelling in the first minute after a
+        // restart, decaying to about 10 only as the cooldowns spread themselves
+        // out. Seeding the phase keeps it at the steady state from the start.
+        if (dit == nextDuel.end())
+        {
+            nextDuel[guid] = now + urand(0, g_OllamaDuelCooldownSeconds * IN_MILLISECONDS);
+        }
+        else if (now >= dit->second)
+        {
+            Player* opponent = nullptr;
+            for (auto const& itr : ObjectAccessor::GetPlayers())
+            {
+                Player* other = itr.second;
+                if (!other || other == bot || !other->IsInWorld() || !other->IsAlive()) continue;
+                // Bots only: challenging the player unprompted would be rude.
+                if (!other->GetSession() || !other->GetSession()->IsBot()) continue;
+                if (other->IsInCombat() || other->duel) continue;
+                if (other->GetTeamId() != bot->GetTeamId()) continue;   // duels are same-faction
+                if (!bot->IsWithinDistInMap(other, 8.0f)) continue;
+                if (!bot->IsWithinLOS(other->GetPositionX(), other->GetPositionY(), other->GetPositionZ())) continue;
+                opponent = other;
+                break;
+            }
+
+            if (opponent)
+            {
+                uint32 const base = g_OllamaDuelCooldownSeconds * IN_MILLISECONDS;
+                nextDuel[guid] = now + base + urand(0, base);
+
+                bot->SetFacingToObject(opponent);
+                bot->CastSpell(opponent, 7266, true);   // Duel
+
+                if (g_EnableOllamaBotBuddyDebug)
+                {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] {} challenges {} to a duel",
+                             bot->GetName(), opponent->GetName());
+                }
+
+                g_nextQuirkTime[guid] = now + q.minGapMs;
+                return;
+            }
+        }
+    }
+
     g_nextQuirkTime[guid] = now + q.minGapMs + urand(0, q.minGapMs);
 
     uint32 roll = urand(0, 99);

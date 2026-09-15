@@ -82,3 +82,11 @@ OllamaBotControl.CombatStrafe = 1
 #     nobody is within about 30 yards to hear it.
 #     Default: 240
 OllamaBotControl.SayCooldownSeconds = 240
+
+# OllamaBotControl.DuelCooldownSeconds
+#     Minimum seconds between one bot challenging another to a duel, jittered up
+#     to double. Only fires when both are idle, out of combat, same faction and
+#     within 8 yards. The core refuses duels inside sanctuaries, so in practice
+#     this happens outside city gates. 0 disables.
+#     Default: 3600
+OllamaBotControl.DuelCooldownSeconds = 3600
