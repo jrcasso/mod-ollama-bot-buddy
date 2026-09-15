@@ -1794,6 +1794,82 @@ static std::vector<BotDestination> BuildDestinationCandidates(Player* bot, float
                         c->GetPositionX(), c->GetPositionY(), c->GetPositionZ() });
     }
 
+    // 1b. A step toward the bot's quest objective.
+    //
+    // Measured: 45.5% of the decisions that reach the model are bots holding a
+    // quest whose objective is nowhere near them, and the entire movement
+    // vocabulary reaches about 100 yards -- on live prompts the furthest option
+    // offered had a median of 76 yards and a maximum of 103. A bot whose
+    // objective is in the next zone therefore cannot express going there, no
+    // matter whether the decision is made here or by the model. That is a
+    // navigation gap, not a reasoning one.
+    //
+    // quest_poi already carries the answer, and every one of the 387 distinct
+    // incomplete quests these bots hold has POI data. sObjectMgr keeps it in
+    // memory, so this costs a hash lookup rather than a query.
+    //
+    // The destination offered is deliberately a *step*, not the objective
+    // itself: a single MovePoint across a zone will not path, so this projects a
+    // short distance along the bearing and checks that much is walkable. Repeated
+    // decisions then walk the bot there.
+    {
+        float bestDist = 0.0f;          // 0 means "nothing found yet"
+        float bx2 = 0.0f, by2 = 0.0f;
+        std::string bestQuest;
+
+        for (auto const& qs : bot->getQuestStatusMap())
+        {
+            if (qs.second.Status != QUEST_STATUS_INCOMPLETE) continue;
+            Quest const* q = sObjectMgr->GetQuestTemplate(qs.first);
+            if (!q) continue;
+
+            QuestPOIVector const* pois = sObjectMgr->GetQuestPOIVector(qs.first);
+            if (!pois) continue;
+
+            for (QuestPOI const& poi : *pois)
+            {
+                if (poi.MapId != map->GetId()) continue;     // same map only
+                for (QuestPOIPoint const& pt : poi.points)
+                {
+                    float const px = float(pt.x), py = float(pt.y);
+                    float const d = std::sqrt((px - bx) * (px - bx) + (py - by) * (py - by));
+
+                    // Only worth offering when it is beyond what the local
+                    // candidates already cover, and not absurdly far. Nearest
+                    // wins: a bot should walk to its closest objective, not its
+                    // most distant one.
+                    if (d > 120.0f && d < 4000.0f && (bestDist == 0.0f || d < bestDist))
+                    {
+                        bestDist = d;
+                        bx2 = px;
+                        by2 = py;
+                        bestQuest = q->GetTitle();
+                    }
+                }
+            }
+        }
+
+        if (bestDist > 0.0f)
+        {
+            float const ang = std::atan2(by2 - by, bx2 - bx);
+            // Try progressively shorter steps: terrain often blocks the first.
+            for (float step : { 80.0f, 50.0f, 25.0f })
+            {
+                float nx = bx + std::cos(ang) * step;
+                float ny = by + std::sin(ang) * step;
+                float nz = map->GetHeight(nx, ny, bz + 5.0f, true);
+                if (nz <= INVALID_HEIGHT) continue;
+                if (!pathable(nx, ny, nz)) continue;
+
+                std::ostringstream lbl;
+                lbl << "toward your quest objective: " << bestQuest
+                    << " (" << uint32(bestDist) << "y away)";
+                out.push_back({ lbl.str(), nx, ny, nz });
+                break;
+            }
+        }
+    }
+
     // 2. Cardinal exploration points, only if genuinely pathable.
     static const struct { char const* name; float dx, dy; } kDirs[] = {
         { "north", 0.0f, 60.0f }, { "south", 0.0f, -60.0f },

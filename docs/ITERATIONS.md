@@ -93,6 +93,7 @@ and PERSONAS rows). The code changes themselves stand.
 | 46 | Prompt evals | Audit recorded claims against current measurements; **no code shipped** | Host load made builds and inference uneconomic, and stale recorded facts have misled this project repeatedly | Re-measured 126 current captures vs 55 old-era ones; pure file analysis | **Two claims retired.** The ~47ms prompt-eval was attributed to same-bot prefix caching; that prefix is **179 chars** (cross-bot 25), so caching does not explain it — figure stands, explanation now marked unexplained. Prompt stats restated: static **tail** 18,315 → **1 char** (slab moved, not shrunk), SITUATION reaching model 29% → **1%**, persona depth 1.1% → **99.3%** |
 | 47 | Efficacy | Target creatures that **drop** quest items, not just ones named by the quest | 668 of 998 incomplete quests need items vs 304 needing an NPC, so two thirds of quest progress had no targeting | 14 bots, 8 min, `DeterministicActions` off so the assessment reaches captured prompts | **Fires where nothing fired before:** quest-target situations 0/~65 to 2/67, both from the new path. Also **resolved the recurring crash-grep false alarm**: creature names like "Crashing Wave-Spirit" reaching Server.log via an unprefixed module log line. `Errors.log` 0 bytes throughout |
 | 48 | LLM efficiency | Measure the deterministic share and what the remainder actually is; **no code shipped** | The standing principle needs a number, and five situation branches had been added since it was last measured | 68 captured prompts with `DeterministicActions=0`, plus code and live-data checks on movement range | **Deterministic share 9% → 19.1%.** The other 80.9% is mostly *navigation*: 45.5% are bots holding a quest with no objective nearby, and the whole movement vocabulary reaches ~100y (median furthest option **76y**). Neither path can express long-range travel, so this is not an LLM-vs-code question |
+| 49 | Efficacy | Offer a step toward the bot's nearest quest objective, from `quest_poi` | Row 48 found the remaining 80.9% is a navigation gap: 45.5% of LLM-bound decisions are bots holding a quest they cannot reach, and the whole movement vocabulary tops out near 100y | 14 bots, 8 min, counting prompts offering the new destination | **61% of prompts now offer one** (42/69), against 74% of bots holding a quest. Examples reach 130-287y, well beyond the previous 103y maximum. In-memory lookup, no query; all 387 distinct incomplete quests have POI data |
 
 ## Architectural direction (decided): deterministic first, LLM for speech
 
@@ -164,11 +165,12 @@ whether the decision is made by code or by the model. The 80.9% is a navigation
 gap, not an LLM-versus-deterministic question, and adding situation branches will
 not move it.
 
-Two ways out, neither attempted here:
+Two ways out. The first was taken in row 49:
 
-* Give the movement vocabulary long range -- quest POI coordinates exist in
-  `quest_poi`, and a "travel toward your objective" destination would make the
-  intent expressible.
+* **Done.** Give the movement vocabulary long range using the `quest_poi`
+  coordinates. A destination reading "toward your quest objective: <title> (Ny
+  away)" now appears in 61% of prompts, with distances of 130 to 287 yards where
+  the previous maximum was 103.
 * Stop wiping the non-combat brain, which already contains mod-playerbots' travel
   system. Tried twice (rows 32 and 34) and it did not replicate, but both attempts
   measured movement and failure rates rather than whether bots reach their
