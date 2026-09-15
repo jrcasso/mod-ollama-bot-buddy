@@ -48,3 +48,34 @@ minutes to 24 in seven.
 
 Measured with no model loaded, since none of this involves the LLM: restarts 0,
 no crashes, tick 105ms, CPU 302%, all unchanged from baseline.
+
+## Sitting (iteration 44)
+
+Idle bots occasionally sit, and seated bots occasionally stand back up. Cosmetic
+only: the core clears the sit state on movement or damage, so it cannot strand
+anyone, and it is skipped while mounted.
+
+The motivation came out of a mount census run for a different question. Mounts
+work fine -- 31 rising to 124 mounted out of ~390 eligible bots over six minutes
+-- but the same census showed only 40 to 55 of 500 bots **moving** at any moment.
+About 90% of the world is standing still, so what it looks like while standing
+still matters.
+
+Two mistakes were caught by checking rather than shipping:
+
+1. **The branch was far too likely.** It was attached to the fall-through of the
+   quirk roll, and the four profile weights sum to between 70 and 84, so it would
+   have fired on a fifth to five sixths of every opportunity -- the "still,
+   patient" profile would have sat 84% of the time. Gated to 1-in-6, with the
+   remainder going back to doing nothing as before.
+
+2. **Sitting was a one-way latch.** Nothing stands a bot back up except moving or
+   being hit, and 90% of bots are stationary, so seated bots accumulate. Measured
+   after five minutes: 158 seated against 342 standing and still climbing. A
+   world of statues that happen to be sitting is no better than one standing to
+   attention. Seated bots now stand again on a 1-in-3 roll, making it a rhythm.
+
+The stand-up half is reasoned from the same verified roll chain rather than
+separately measured, because builds had degraded to ~51 minutes each and a third
+instrumented round was not worth that. Deployment is clean: restarts 0, no
+crashes, no slow ticks, CPU 293%.

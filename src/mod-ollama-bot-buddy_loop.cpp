@@ -3227,6 +3227,41 @@ static void ApplyHumanMovement(Player* bot)
         constexpr size_t kEmoteCount = sizeof(kIdleEmotes) / sizeof(kIdleEmotes[0]);
         bot->HandleEmoteCommand(kIdleEmotes[urand(0, kEmoteCount - 1)]);
     }
+    else if (bot->getStandState() == UNIT_STAND_STATE_SIT && urand(0, 2) == 0)
+    {
+        // Get back up.
+        //
+        // Sitting was a one-way latch: the core only clears it on movement or
+        // damage, and about 90% of bots are stationary at any moment, so seated
+        // bots accumulated. Measured after five minutes: 158 seated against 342
+        // standing, and still climbing, which ends with a world of statues that
+        // happen to be sitting down. Standing back up makes it a rhythm rather
+        // than a ratchet.
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+    }
+    else if (urand(0, 5) == 0 && bot->getStandState() == UNIT_STAND_STATE_STAND && !bot->IsMounted())
+    {
+        // Sit down. People park themselves constantly -- at inns, on the steps
+        // of the bank, next to a flight master -- and a crowd of figures all
+        // standing at attention is one of the things that makes a server read as
+        // artificial.
+        //
+        // Measured motivation: across 500 bots only about 10% are moving at any
+        // moment (40 to 55 in a census), so most of the world is standing still
+        // regardless. Standing still while seated at least looks deliberate.
+        //
+        // Cosmetic only: the core clears the sit state as soon as the bot moves
+        // or is attacked, so this cannot strand anybody. Skipped while mounted,
+        // since sitting on a mount is not a thing.
+        //
+        // The 1-in-6 matters. This branch is the fall-through of the quirk roll,
+        // and the four profile weights sum to between 70 and 84, so without a
+        // gate it would fire on a fifth to five sixths of every opportunity --
+        // the "still, patient" profile would sit 84% of the time. Everyone seated
+        // is as wrong as everyone at attention. The remainder goes back to doing
+        // nothing, which is what it did before.
+        bot->SetStandState(UNIT_STAND_STATE_SIT);
+    }
 }
 
 // Evict per-bot state for bots that are no longer in world.
