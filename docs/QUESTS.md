@@ -121,3 +121,30 @@ corpse the bot has loot rights to, set it as the loot target, and call
 already only mentions corpses within 6 yards, so the approach stage is usually
 unnecessary. That was not attempted here because it is a larger change than one
 measured variable.
+
+
+## Collection quests now have targeting (iteration 47)
+
+Two thirds of the quests these bots hold are collection quests -- 668 of 998
+incomplete quests need items, against 304 needing an NPC killed or used. Until now
+only the latter had any targeting, because the assessment matched on
+`RequiredNpcOrGo`. A bot carrying "collect 10 hides" would stand beside the
+creature that drops them with nothing saying so.
+
+`LootStore::HaveQuestLootForPlayer(lootid, player)` answers this directly against
+an in-memory template map, resolving reference entries and per-player quest state
+itself, so there is no reverse index to build and no query to run.
+
+It is asked **once per creature, not once per quest**. The call is a question
+about the player rather than about one quest, so putting it inside the per-quest
+loop would have attributed the drop to whichever quest the loop happened to be on
+-- a wrong title attached to a correct action.
+
+Verified with 14 bots over eight minutes, with DeterministicActions temporarily
+off so the assessment's output reaches the captured prompts:
+
+    quest-target situations   0 of ~65 prompts before
+                              2 of 67 prompts after, both from the new path
+
+Still only 3% of decisions, because it needs the bot to be standing near a
+creature that drops what it wants. But it fires where nothing fired before.

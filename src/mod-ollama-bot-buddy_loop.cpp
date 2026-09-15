@@ -7,6 +7,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "LootMgr.h"
 #include "Log.h"
 #include "DatabaseEnv.h"
 #include <thread>
@@ -464,7 +465,13 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
 
         if (g_EnableOllamaBotBuddyDebug)
         {
-            LOG_INFO("server.loading", "Bot Reply: {}", jsonStr);
+            // Prefixed like every other line this module writes. Without it,
+            // this one dumps raw LLM JSON -- creature names and bot speech --
+            // into Server.log unlabelled, and a crash check written as
+            // grep -iE 'crash|ASSERTION|SIGSEGV' matches game data such as
+            // "Crashing Wave-Spirit" or "Crashed Recon Pilot". That false alarm
+            // cost two separate investigations.
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot Reply: {}", jsonStr);
         }
 
         return result;
@@ -2148,6 +2155,34 @@ static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outComm
                     questTargetDist = dist;
                     questTargetTitle = q->GetTitle();
                     break;
+                }
+            }
+
+            // Collection quests: the creature is not named by any quest, it
+            // simply drops what a quest wants.
+            //
+            // RequiredNpcOrGo only covers kill and interact objectives, and those
+            // are the minority. Of 998 incomplete quests held by online bots, 304
+            // need an NPC and 668 need items, so two thirds of all quest progress
+            // had no targeting at all: a bot carrying "collect 10 hides" would
+            // stand beside the thing that drops them with nothing saying so.
+            //
+            // Asked once per creature rather than once per quest, because
+            // HaveQuestLootForPlayer is a question about the player, not about one
+            // quest -- it walks the creature's loot template, follows reference
+            // entries, and checks every active quest itself. Putting it inside the
+            // per-quest loop would have attributed the drop to whichever quest the
+            // loop happened to be on, which is a wrong title on a correct action.
+            if (!nearestQuestTarget || questTargetDist > dist)
+            {
+                if (CreatureTemplate const* ct = c->GetCreatureTemplate())
+                {
+                    if (ct->lootid && LootTemplates_Creature.HaveQuestLootForPlayer(ct->lootid, bot))
+                    {
+                        nearestQuestTarget = c;
+                        questTargetDist = dist;
+                        questTargetTitle = "one of your collection quests";
+                    }
                 }
             }
         }

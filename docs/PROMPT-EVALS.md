@@ -75,9 +75,19 @@ and a server that never went down. The log rotated on restore before the lines
 could be read, so what they actually were is **unknown** -- bot speech is the
 likely explanation but it was not verified.
 
-Use an exclusion when checking for crashes on a server running this module:
+**Resolved (2026-09-15), and the exclusion above was not enough.** The same
+false alarm recurred at 26 lines. The cause is game data: creature names in this
+expansion include "Crash Bigbomb", "Crashed Recon Pilot", "Crashing Wave-Spirit"
+and "Crashin' Thrashin' Racer". They reached Server.log through a module log line
+that lacked the `[OllamaBotBuddy]` prefix and dumped raw LLM JSON, so the
+exclusion did not catch it. That line is now prefixed like every other.
 
-    grep -iE 'crash|ASSERTION|SIGSEGV' Server.log | grep -v 'OllamaBotBuddy'
+Do not grep Server.log for crashes at all. Use the authoritative sources:
 
-and corroborate with the unambiguous markers (`Aborted`, `terminate called`,
-`Segmentation fault`, `core dumped`) plus the container's restart count.
+    docker exec ac-worldserver sh -c 'wc -c < /azerothcore/env/dist/logs/Errors.log'
+    docker inspect -f '{{.RestartCount}}' ac-worldserver
+    grep -icE 'Aborted|terminate called|Segmentation fault|core dumped' Server.log
+
+`Errors.log` was 0 bytes through both incidents, restart count stayed 0, and no
+fatal marker ever appeared. Those three agreed with each other and with reality;
+the keyword grep did not.
