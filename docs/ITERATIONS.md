@@ -92,6 +92,7 @@ and PERSONAS rows). The code changes themselves stand.
 | 45 | Tooling | Diagnose builds degrading from 50s to ~51 min; **no code shipped** | Two consecutive 51-minute builds made further instrumented verification uneconomic | Compared ccache stats and object counts between a fast and a slow build, then profiled host load | **Not the build, not ccache.** Both builds compiled 1766 objects with **100% ccache hit rate**; the compile step went 35s → 1118s. Cause is host contention: load 17.4 on 12 cores from 7 concurrent Claude sessions plus macOS `Contacts` at 90% and `StorageManagement` at 30%. Corrects the standing assumption that slow builds mean a wiped ccache |
 | 46 | Prompt evals | Audit recorded claims against current measurements; **no code shipped** | Host load made builds and inference uneconomic, and stale recorded facts have misled this project repeatedly | Re-measured 126 current captures vs 55 old-era ones; pure file analysis | **Two claims retired.** The ~47ms prompt-eval was attributed to same-bot prefix caching; that prefix is **179 chars** (cross-bot 25), so caching does not explain it — figure stands, explanation now marked unexplained. Prompt stats restated: static **tail** 18,315 → **1 char** (slab moved, not shrunk), SITUATION reaching model 29% → **1%**, persona depth 1.1% → **99.3%** |
 | 47 | Efficacy | Target creatures that **drop** quest items, not just ones named by the quest | 668 of 998 incomplete quests need items vs 304 needing an NPC, so two thirds of quest progress had no targeting | 14 bots, 8 min, `DeterministicActions` off so the assessment reaches captured prompts | **Fires where nothing fired before:** quest-target situations 0/~65 to 2/67, both from the new path. Also **resolved the recurring crash-grep false alarm**: creature names like "Crashing Wave-Spirit" reaching Server.log via an unprefixed module log line. `Errors.log` 0 bytes throughout |
+| 48 | LLM efficiency | Measure the deterministic share and what the remainder actually is; **no code shipped** | The standing principle needs a number, and five situation branches had been added since it was last measured | 68 captured prompts with `DeterministicActions=0`, plus code and live-data checks on movement range | **Deterministic share 9% → 19.1%.** The other 80.9% is mostly *navigation*: 45.5% are bots holding a quest with no objective nearby, and the whole movement vocabulary reaches ~100y (median furthest option **76y**). Neither path can express long-range travel, so this is not an LLM-vs-code question |
 
 ## Architectural direction (decided): deterministic first, LLM for speech
 
@@ -137,3 +138,38 @@ disappears from the common path, the 36% action-failure rate should collapse
 since the module only issues commands it has already validated, and inference
 capacity (~0.2 decisions/second) stops being the limit on how many bots can be
 driven.
+
+## The ceiling on the deterministic share (iteration 48)
+
+Executing the situation assessment directly now covers 19.1% of decisions, up
+from roughly 9% when it shipped, as branches were added for fighting back,
+turn-ins, givers in reach, quest objectives and collection quests.
+
+The remaining 80.9% is not waiting for more branches. Of 55 decisions that
+produced no situation:
+
+    92.7%  had destinations offered
+    45.5%  had an active quest
+    23.6%  had an enemy listed
+     0.0%  were in combat
+
+Nearly half are bots carrying a quest whose objective is simply not nearby. The
+deterministic answer is "travel to it", and that is exactly what cannot be said:
+`BuildDestinationCandidates` uses a 100-yard radius, caps at twelve creatures, and
+adds four fixed compass points at 60 yards. Measured on live prompts, the furthest
+destination ever offered is a median of 76 yards and a maximum of 103.
+
+So a bot whose objective is in the next zone has no way to express going there,
+whether the decision is made by code or by the model. The 80.9% is a navigation
+gap, not an LLM-versus-deterministic question, and adding situation branches will
+not move it.
+
+Two ways out, neither attempted here:
+
+* Give the movement vocabulary long range -- quest POI coordinates exist in
+  `quest_poi`, and a "travel toward your objective" destination would make the
+  intent expressible.
+* Stop wiping the non-combat brain, which already contains mod-playerbots' travel
+  system. Tried twice (rows 32 and 34) and it did not replicate, but both attempts
+  measured movement and failure rates rather than whether bots reach their
+  objectives.
