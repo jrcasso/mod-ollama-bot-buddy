@@ -14,9 +14,23 @@ captured prompts:
 | slab removed | 16/16 | 6,437 chars (74% smaller) |
 
 Identical decision quality. But **latency did not improve** (4.21s vs 4.42s
-median), which is expected: prompt evaluation is already served from the
-llama.cpp prefix cache at roughly 47ms, and generation dominates. See
-docs/INFERENCE-CAPACITY.md.
+median). Prompt evaluation was measured at roughly 47ms, so generation dominates
+either way. See docs/INFERENCE-CAPACITY.md.
+
+**Correction (2026-09-15).** The explanation originally given for that 47ms --
+that "consecutive prompts from the same bot share a long prefix", so llama.cpp's
+prefix cache covers it -- does not survive measurement. Measured across 126
+current captured prompts:
+
+    cross-bot common prefix                25 chars
+    same-bot consecutive common prefix    179 chars (median)
+
+179 characters is not a long prefix, and Ollama serves requests through a slot
+that holds only the previous prompt, so consecutive *requests* (from any bot)
+share about 25 characters. Prefix caching therefore explains very little. The
+47ms figure itself stands; the reason for it is now unexplained, and worth
+re-deriving before anyone leans on it. One candidate not yet tested: whether
+`prompt_eval_count` reports tokens actually evaluated or includes cached ones.
 
 So the slab costs almost nothing and removing it gains almost nothing, while
 deleting 18,000 characters of behavioural rules that have never been tested
@@ -73,3 +87,28 @@ active kill quest and the target in sight gets no directive and therefore wander
 This is only a candidate: just 3 of 83 captured prompts had a visible quest
 target, and only one of those had no situation line. Worth revisiting with a
 capture run aimed at questing bots before building anything.
+
+## Current prompt shape (2026-09-15), after the prompt changes
+
+The figures above were measured before situations became deterministic, before
+the SPEECH block, and before the persona block moved. Re-measured on 126 current
+captures against 55 from that era:
+
+| | then | now |
+|---|---|---|
+| median length | 24,188 | 25,143 |
+| common static **tail** | 18,315 (76%) | **1 char** |
+| static slab, wherever it sits | 18,315 | 18,652 (74%) |
+| prompts carrying a SITUATION | 29% | **1%** |
+| persona block depth | 1.1% | **99.3%** |
+
+Two things to read carefully here.
+
+The static slab did not shrink; it stopped being the *tail*, because the persona
+block now follows it and differs per bot. Anyone re-running the "longest common
+suffix" trick to find the boilerplate will now measure 1 character and conclude
+there is none.
+
+The SITUATION rate falling from 29% to 1% is the deterministic path working as
+intended: those decisions are executed directly and never reach the model. It is
+not a sign that situations stopped occurring.

@@ -37,10 +37,11 @@ LLM while the remaining ~495 bots run the native mod-playerbots AI.
 
 Each of these was hypothesised and then disproved by measurement:
 
-1. **Prompt size.** Prompts are large (median 24,219 chars, 75% of which is
-   static boilerplate) but prompt evaluation costs only ~47ms in steady
-   state. llama.cpp prefix caching already covers it, because consecutive
-   prompts from the same bot share a long prefix.
+1. **Prompt size.** Prompts are large (median 24,219 chars at the time, 75% of
+   which is static boilerplate) but prompt evaluation costs only ~47ms in steady
+   state, so generation dominates. The prefix-caching explanation originally
+   given for that has since been measured and does not hold; see the correction
+   in docs/PROMPT-SIZE.md.
 
 2. **Prompt ordering.** Moving the static boilerplate to the front to enlarge
    the cacheable prefix made things *worse*: 5,595ms of prompt eval on every
@@ -83,7 +84,9 @@ Two consecutive builds took about 51 minutes each where the previous ones took
 Identical object count, identical cache behaviour, 32x slower. The cause was the
 host: load average 17.4 on 12 cores, with seven concurrent Claude sessions, a
 runaway macOS `Contacts` process at 90% CPU and `StorageManagement` at 30%. The
-worldserver is stopped during builds, so it was not competing.
+worldserver is stopped during builds, so it was not competing. Observed again the
+following hour with `StorageManagement` at 66% and `Storage.appex` at 44%, so
+this is recurring rather than a one-off.
 
 Before blaming the cache, check `uptime` and `ps aux | sort -nrk3 | head`. A
 build that is slow with a 100% ccache hit rate is being starved, not recompiling.
