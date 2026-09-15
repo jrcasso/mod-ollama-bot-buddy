@@ -2725,6 +2725,8 @@ static std::string BuildBotPrompt(Player* bot)
     }
 
     REMEMBER: NEVER REPLY WITH ANYTHING OTHER THAN A PROPERLY FORMATTED JSON OBJECT WITH QUOTES AROUND ALL STRINGS!!!
+
+    SPEECH: your \"say\" is dialogue, not narration. Never describe what you are doing (\"Checking for quests\", \"Moving to the target\") -- the reasoning field is for that. Say something a person would type in chat: a greeting, a complaint, a joke, a question, trash talk, or nothing at all. Most of the time an empty string is right.
     )";
 
     // Situation assessment goes LAST, and this placement is load-bearing.

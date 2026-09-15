@@ -88,11 +88,23 @@ With speech actually reaching the game, the quality is visible for the first tim
 
 Three faults, all separate from the plumbing:
 
-1. **It narrates the action rather than speaking.** The prompt asks for "what your
-   character would say in-game to players" and gets a status report instead.
-2. **It is homogeneous.** The persona differences measured above do not survive
-   into production speech, plausibly because the weighting is deliberately ~72%
-   ordinary dispositions, whose voices are bland by design.
+1. ~~**It narrates the action rather than speaking.**~~ **Fixed in iteration 40**,
+   by wording, not position. Adding a SPEECH block took narration from 93% to 0%
+   and made the model return an empty string 57% of the time, which is what a
+   player mostly does. Command selection was unchanged, so the block does not
+   disturb actions.
+2. **It is homogeneous, and iteration 40 made this worse.** Before, 30 of 42
+   sampled lines were distinct (varied narration). After, production produced 8
+   byte-identical lines out of 9: "Hello there, do you have any quests for me?"
+   Trading varied narration for an identical greeting is not obviously a win, and
+   this is now the dominant fault.
+
+   The cause is not that personas cannot shape speech -- four tests above show
+   they do, strongly. It is that the SPEECH block offers a concrete menu ("a
+   greeting, a complaint, a joke, a question, trash talk") and the model reaches
+   for the first item every time, apparently without consulting the disposition
+   sitting earlier in the prompt. Making the block refer to the bot's persona is
+   the obvious next variable, and must be measured on its own.
 3. ~~**It is constant.** 88 lines from 89 decisions.~~ **Fixed in iteration 39.**
    A per-bot cooldown of 240 seconds, jittered up to double, plus a 30-yard
    earshot check, took this from 98.9% of decisions to 11.5% -- about one line per
