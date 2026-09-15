@@ -67,3 +67,23 @@ prompt wording.
 `DecisionIntervalSeconds = 3` is effectively inert: inference, not the
 timer, is the limiter. An in-flight `busy` flag already prevents the timer
 from issuing overlapping requests for the same bot.
+
+## Build times vary with host load, not just ccache
+
+The standing assumption in this project was that a slow build means the ccache
+was wiped (see the note about `docker builder prune`). That is not the only
+cause, and on 2026-09-15 it was not the cause at all.
+
+Two consecutive builds took about 51 minutes each where the previous ones took
+50 seconds. Comparing the logs:
+
+    fast build    1766 objects, ccache Direct 61093/61096 (100.0%), step 35s
+    slow build    1766 objects, ccache Direct 64721/64724 (100.0%), step 1118s
+
+Identical object count, identical cache behaviour, 32x slower. The cause was the
+host: load average 17.4 on 12 cores, with seven concurrent Claude sessions, a
+runaway macOS `Contacts` process at 90% CPU and `StorageManagement` at 30%. The
+worldserver is stopped during builds, so it was not competing.
+
+Before blaming the cache, check `uptime` and `ps aux | sort -nrk3 | head`. A
+build that is slow with a 100% ccache hit rate is being starved, not recompiling.
