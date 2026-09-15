@@ -93,18 +93,26 @@ Three faults, all separate from the plumbing:
    and made the model return an empty string 57% of the time, which is what a
    player mostly does. Command selection was unchanged, so the block does not
    disturb actions.
-2. **It is homogeneous, and iteration 40 made this worse.** Before, 30 of 42
-   sampled lines were distinct (varied narration). After, production produced 8
-   byte-identical lines out of 9: "Hello there, do you have any quests for me?"
-   Trading varied narration for an identical greeting is not obviously a win, and
-   this is now the dominant fault.
+2. **It clusters, and two attempts to fix that made things worse.**
 
-   The cause is not that personas cannot shape speech -- four tests above show
-   they do, strongly. It is that the SPEECH block offers a concrete menu ("a
-   greeting, a complaint, a joke, a question, trash talk") and the model reaches
-   for the first item every time, apparently without consulting the disposition
-   sitting earlier in the prompt. Making the block refer to the bot's persona is
-   the obvious next variable, and must be measured on its own.
+   Iteration 40 reported this as a collapse to 8 byte-identical lines out of 9.
+   That figure came from nine lines of production output and was too small to
+   carry the claim. Replayed across 42 samples, the shipped block produces 11
+   distinct lines out of 22, so about half. There is real clustering -- one
+   phrase accounted for 9 of 22 -- but it is not the collapse first reported.
+
+   Iteration 41 tried the obvious remedy, telling the block to speak in the voice
+   of YOUR PERSONALITY, and also tried deleting the menu of options in case the
+   model was simply taking the first item. Both suppress speech rather than vary
+   it:
+
+       shipped block            48% empty   11/22 distinct
+       + speak as your persona  88% empty    2/5  distinct
+       menu removed             95% empty    2/2  distinct
+
+   Every instruction added to that block pushes the model further toward the
+   "or nothing at all" escape hatch. Whatever fixes variety will probably not be
+   another sentence in the same paragraph.
 3. ~~**It is constant.** 88 lines from 89 decisions.~~ **Fixed in iteration 39.**
    A per-bot cooldown of 240 seconds, jittered up to double, plus a 30-yard
    earshot check, took this from 98.9% of decisions to 11.5% -- about one line per
