@@ -6,6 +6,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "Playerbots.h"
+#include "GameTime.h"
 #include "World.h"
 
 #include <atomic>
@@ -139,7 +140,7 @@ void Telemetry_Start()
     Telemetry_Event("session", nullptr, nullptr, 0, {
         {"scope",        g_OllamaTelemetryAllBots ? "all_bots" : "player_adjacent"},
         {"full_prompts", g_OllamaTelemetryFullPrompts},
-        {"realm_uptime", sWorld->GetUptime()},
+        {"realm_uptime", GameTime::GetUptime().count()},
     });
 }
 
