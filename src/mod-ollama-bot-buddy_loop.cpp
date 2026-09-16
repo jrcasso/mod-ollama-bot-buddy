@@ -133,6 +133,52 @@ static void RecordActionOutcome(Player* bot, std::string const& outcome)
         g_lastActionOutcome[bot->GetGUID().GetRawValue()] = outcome;
 }
 
+// How many times in a row the same command has failed for this bot.
+//
+// g_lastActionOutcome above is only ever read by the prompt builder, so it
+// tells the LLM what went wrong. When DeterministicActions is on, the
+// situation assessment issues the command itself and the prompt is never
+// consulted -- so a deterministic branch that recomputes the same command from
+// unchanged world state will reissue it forever. That is not theoretical: a
+// corpse just out of reach made bots stand still and retry looting until
+// something else moved them.
+//
+// This is the brake. After kDeterministicFailureLimit identical failures the
+// assessment stops issuing that command and lets the LLM decide instead, which
+// at least sees the failure text and can choose something else.
+static std::unordered_map<uint64_t, std::pair<std::string, uint32_t>> g_repeatFailure;
+static std::mutex g_repeatFailureMutex;
+static constexpr uint32_t kDeterministicFailureLimit = 3;
+
+static void RecordCommandResult(Player* bot, std::string const& signature, bool ok)
+{
+    if (!bot) return;
+    uint64_t const key = bot->GetGUID().GetRawValue();
+    std::lock_guard<std::mutex> lock(g_repeatFailureMutex);
+
+    if (ok)
+    {
+        g_repeatFailure.erase(key);
+        return;
+    }
+
+    auto& entry = g_repeatFailure[key];
+    if (entry.first == signature)
+        ++entry.second;
+    else
+        entry = { signature, 1 };
+}
+
+// True when this exact command has already failed repeatedly for this bot.
+static bool IsCommandStuck(Player* bot, std::string const& signature)
+{
+    if (!bot) return false;
+    std::lock_guard<std::mutex> lock(g_repeatFailureMutex);
+    auto it = g_repeatFailure.find(bot->GetGUID().GetRawValue());
+    return it != g_repeatFailure.end() && it->second.first == signature &&
+           it->second.second >= kDeterministicFailureLimit;
+}
+
 static std::string GetActionOutcome(Player* bot)
 {
     if (!bot) return "";
@@ -454,6 +500,8 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
         }
 
         bool result = HandleBotControlCommand(bot, command);
+
+        RecordCommandResult(bot, type, result);
 
         if (result)
             RecordActionOutcome(bot, "");   // success: clear any stale failure
@@ -2114,7 +2162,7 @@ static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outComm
                 << "keep attacking. Cast " << spellName << " (spell " << defensive << ") now, or move "
                 << "away to disengage. Do not attack this turn.\n";
 
-            if (outCommand && outCommand->is_null())
+            if (outCommand && outCommand->is_null() && !IsCommandStuck(bot, "spell"))
                 *outCommand = nlohmann::json{{"type", "spell"},
                                              {"params", {{"spellid", defensive}}}};
         }
@@ -2159,7 +2207,7 @@ static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outComm
                 << " yards away. Fight back: attack guid " << aguid
                 << " now. Do not move away.\n";
 
-            if (outCommand && outCommand->is_null())
+            if (outCommand && outCommand->is_null() && !IsCommandStuck(bot, "attack"))
                 *outCommand = nlohmann::json{{"type", "attack"},
                                              {"params", {{"attack_guid", aguid}}}};
         }
@@ -2171,6 +2219,14 @@ static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outComm
     // attack 12/12, and with a completed quest and its giver at 1 yard it chose
     // move_to 12/12. The MOVEMENT block is the loudest thing in the prompt and
     // biases everything toward movement unless the alternative is spelled out.
+    // 3.5 yards, not 6. OpenLootAction::DoLoot enforces INTERACTION_DISTANCE - 2
+    // and INTERACTION_DISTANCE is 5.5f, so 6 yards was outside what looting can
+    // actually reach. A corpse between 3.5 and 6 yards got "Loot it now. Do not
+    // move." every tick from an action that could never succeed at that range,
+    // and the bot stood there retrying until something else moved it. The two
+    // numbers have to agree, so this one is derived rather than written twice.
+    constexpr float kLootReach = INTERACTION_DISTANCE - 2.0f;
+
     Creature* nearestLoot = nullptr;      float lootDist = 6.0f;
     Creature* nearestTurnIn = nullptr;    float turnInDist = 6.0f;
     Creature* nearestQuestGiver = nullptr; float nearestDist = 6.0f;
@@ -2310,12 +2366,28 @@ static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outComm
 
     if (nearestLoot)
     {
-        oss << "SITUATION: There is a lootable corpse within reach (guid "
-            << nearestLoot->GetGUID().GetCounter() << ", " << uint32(lootDist)
-            << " yards). Loot it now. Do not move, and do not attack anything else first.\n";
+        bool const inReach = lootDist <= kLootReach;
 
-        if (outCommand && outCommand->is_null())
-            *outCommand = nlohmann::json{{"type", "loot"}, {"params", nlohmann::json::object()}};
+        if (inReach)
+        {
+            oss << "SITUATION: There is a lootable corpse within reach (guid "
+                << nearestLoot->GetGUID().GetCounter() << ", " << uint32(lootDist)
+                << " yards). Loot it now. Do not move, and do not attack anything else first.\n";
+
+            // Only issue it while it is still working. Once the same command has
+            // failed repeatedly the deterministic branch stands down and the LLM
+            // decides, because it can see the failure and this branch cannot.
+            if (outCommand && outCommand->is_null() && !IsCommandStuck(bot, "loot"))
+                *outCommand = nlohmann::json{{"type", "loot"}, {"params", nlohmann::json::object()}};
+        }
+        else
+        {
+            // Close, but outside what the loot action can reach. Say so plainly
+            // rather than ordering a loot that cannot succeed.
+            oss << "SITUATION: There is a lootable corpse (guid "
+                << nearestLoot->GetGUID().GetCounter() << ") " << uint32(lootDist)
+                << " yards away, just out of looting range. Move closer to it, then loot it.\n";
+        }
     }
 
     if (nearestTurnIn)
@@ -2324,7 +2396,7 @@ static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outComm
             << nearestTurnIn->GetGUID().GetCounter() << ") has your completed quest and is within reach at "
             << uint32(turnInDist) << " yards. Turn the quest in now. You do not need to move.\n";
 
-        if (outCommand && outCommand->is_null())
+        if (outCommand && outCommand->is_null() && !IsCommandStuck(bot, "interact"))
             *outCommand = nlohmann::json{{"type", "interact"},
                                          {"params", {{"guid", nearestTurnIn->GetGUID().GetCounter()}}}};
     }
@@ -2334,7 +2406,7 @@ static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outComm
             << nearestQuestGiver->GetGUID().GetCounter() << ") is a quest giver already within reach at "
             << uint32(nearestDist) << " yards. You do not need to move to reach it. Interact with it.\n";
 
-        if (outCommand && outCommand->is_null())
+        if (outCommand && outCommand->is_null() && !IsCommandStuck(bot, "interact"))
             *outCommand = nlohmann::json{{"type", "interact"},
                                          {"params", {{"guid", nearestQuestGiver->GetGUID().GetCounter()}}}};
     }
@@ -2363,7 +2435,7 @@ static std::string BuildSituationAssessment(Player* bot, nlohmann::json* outComm
             << " yards away. Attack guid " << nearestQuestTarget->GetGUID().GetCounter()
             << " now to make progress.\n";
 
-        if (outCommand && outCommand->is_null())
+        if (outCommand && outCommand->is_null() && !IsCommandStuck(bot, "attack"))
             *outCommand = nlohmann::json{{"type", "attack"},
                                          {"params", {{"attack_guid", nearestQuestTarget->GetGUID().GetCounter()}}}};
     }
@@ -3418,6 +3490,10 @@ static void SweepStaleBotState()
     {
         std::lock_guard<std::mutex> lock(g_lastActionOutcomeMutex);
         prune(g_lastActionOutcome);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_repeatFailureMutex);
+        prune(g_repeatFailure);
     }
     {
         std::lock_guard<std::mutex> lock(botPlayerMessagesMutex);
