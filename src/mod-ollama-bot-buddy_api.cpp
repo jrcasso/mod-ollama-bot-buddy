@@ -58,7 +58,7 @@ namespace BotBuddyAI
         std::ostringstream coords;
         coords << x << ";" << y << ";" << z;
         Event event = Event("", coords.str());
-        ai->DoSpecificAction("go", event);
+        ai->DoSpecificAction("go", event, /*silent=*/true);
         
         if (g_EnableOllamaBotBuddyDebug) {
             float distance = sqrt(pow(x - bot->GetPositionX(), 2) + 
@@ -174,7 +174,7 @@ namespace BotBuddyAI
             
             // Also use playerbot AI movement action as backup
             Event moveEvent = Event("", "");
-            ai->DoSpecificAction("reach melee", moveEvent);
+            ai->DoSpecificAction("reach melee", moveEvent, /*silent=*/true);
             
             return true; // Movement initiated, attack will happen when in range
         }
@@ -199,14 +199,14 @@ namespace BotBuddyAI
         
         // Try playerbot combat actions in order of preference
         if (ai->IsTank(bot)) {
-            result = ai->DoSpecificAction("tank assist", event);
+            result = ai->DoSpecificAction("tank assist", event, /*silent=*/true);
         } else {
-            result = ai->DoSpecificAction("dps assist", event);
+            result = ai->DoSpecificAction("dps assist", event, /*silent=*/true);
         }
         
         // Fallback to melee action if assist actions fail
         if (!result) {
-            result = ai->DoSpecificAction("melee", event);
+            result = ai->DoSpecificAction("melee", event, /*silent=*/true);
         }
         
         if (g_EnableOllamaBotBuddyDebug) {
@@ -257,7 +257,7 @@ namespace BotBuddyAI
                 // For non-quest NPCs, use gossip hello action
                 bot->SetFacingToObject(creature);
                 Event event = Event("", std::to_string(guid.GetCounter()));
-                return ai->DoSpecificAction("gossip hello", event);
+                return ai->DoSpecificAction("gossip hello", event, /*silent=*/true);
             }
         }
         else if (GameObject* go = ObjectAccessor::GetGameObject(*bot, guid))
@@ -294,7 +294,7 @@ namespace BotBuddyAI
                 // Use the bot's AI system to handle interaction with game objects
                 bot->SetFacingToObject(go);
                 Event event = Event("", go->GetGOInfo()->name);
-                return ai->DoSpecificAction("use", event);
+                return ai->DoSpecificAction("use", event, /*silent=*/true);
             }
         }
         return false;
@@ -381,13 +381,13 @@ namespace BotBuddyAI
             
             // Fallback to basic gossip hello action
             Event event = Event("", std::to_string(guid.GetCounter()));
-            return ai->DoSpecificAction("gossip hello", event);
+            return ai->DoSpecificAction("gossip hello", event, /*silent=*/true);
         }
         else if (GameObject* go = questGiver->ToGameObject())
         {
             // Use game object interaction
             Event event = Event("", go->GetGOInfo()->name);
-            return ai->DoSpecificAction("use", event);
+            return ai->DoSpecificAction("use", event, /*silent=*/true);
         }
 
         return false;
@@ -559,13 +559,13 @@ namespace BotBuddyAI
             Event moveEvent = Event("", "");
             if (isMeleeSpell && !bot->IsWithinMeleeRange(target)) {
                 // Need to get into melee range for melee spells
-                ai->DoSpecificAction("reach melee", moveEvent);
+                ai->DoSpecificAction("reach melee", moveEvent, /*silent=*/true);
             } else if (!isMeleeSpell && currentDistance > spellRange) {
                 // Need to get into spell range for ranged spells
-                ai->DoSpecificAction("reach spell", moveEvent);
+                ai->DoSpecificAction("reach spell", moveEvent, /*silent=*/true);
             } else if (!isMeleeSpell && currentDistance < 5.0f && ai->IsRanged(bot)) {
                 // Ranged character too close - back away for better positioning
-                ai->DoSpecificAction("flee", moveEvent);
+                ai->DoSpecificAction("flee", moveEvent, /*silent=*/true);
             }
         }
         
@@ -574,14 +574,14 @@ namespace BotBuddyAI
         if (!spellName || !*spellName) return false;
         
         Event event = Event("", "");
-        bool result = ai->DoSpecificAction(spellName, event);
+        bool result = ai->DoSpecificAction(spellName, event, /*silent=*/true);
         
         // If spell casting by name fails, try using spell ID
         if (!result && target) {
             // Try alternative approaches
             std::string spellIdStr = std::to_string(spellId);
             event = Event("", spellIdStr);
-            result = ai->DoSpecificAction("cast", event);
+            result = ai->DoSpecificAction("cast", event, /*silent=*/true);
         }
         
         if (g_EnableOllamaBotBuddyDebug) {
@@ -602,7 +602,7 @@ namespace BotBuddyAI
         // This used to be:
         //
         //     Event event = Event("", msg);
-        //     return ai->DoSpecificAction("say", event);
+        //     return ai->DoSpecificAction("say", event, /*silent=*/true);
         //
         // which threw the message away. SayAction::Execute is declared
         // `Execute(Event /*event*/)` -- the parameter is commented out and never
@@ -680,7 +680,7 @@ namespace BotBuddyAI
         
         // Use the bot's AI system to handle following
         Event event = Event("", "");
-        return ai->DoSpecificAction("follow", event);
+        return ai->DoSpecificAction("follow", event, /*silent=*/true);
     }
 
     bool StopMoving(Player* bot)
@@ -692,7 +692,7 @@ namespace BotBuddyAI
         
         // Use the bot's AI system to handle stopping
         Event event = Event("", "");
-        return ai->DoSpecificAction("stay", event);
+        return ai->DoSpecificAction("stay", event, /*silent=*/true);
     }
 
     bool AcceptQuest(Player* bot, uint32 questId)
@@ -705,7 +705,7 @@ namespace BotBuddyAI
         // This used to delegate to the playerbot AI:
         //
         //     Event event = Event("", std::to_string(questId));
-        //     return ai->DoSpecificAction("accept quest", event);
+        //     return ai->DoSpecificAction("accept quest", event, /*silent=*/true);
         //
         // which can never work for a random bot. AcceptQuestAction::Execute
         // begins with
@@ -934,14 +934,14 @@ namespace BotBuddyAI
                 ctx->GetValue<LootObject>("loot target")->Set(LootObject(bot, lootGuid));
 
                 Event openEvent = Event("", "");
-                if (ai->DoSpecificAction("open loot", openEvent))
+                if (ai->DoSpecificAction("open loot", openEvent, /*silent=*/true))
                     return true;
             }
         }
 
         // Fall back to the original behaviour when nothing is in reach.
         Event event = Event("", "");
-        return ai->DoSpecificAction("loot", event);
+        return ai->DoSpecificAction("loot", event, /*silent=*/true);
     }
 
 } // namespace BotBuddyAI

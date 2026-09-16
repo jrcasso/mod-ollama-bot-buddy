@@ -3728,7 +3728,36 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             // Gated so the contribution of the deterministic non-combat AI can
             // be measured rather than argued about. Default keeps the clear.
             if (g_OllamaClearNonCombat)
+            {
                 ai->ClearStrategies(BOT_STATE_NON_COMBAT);
+
+                // ... but put "default" back. Despite the name, that strategy
+                // is mod-playerbots' WorldPacketHandlerStrategy
+                // (StrategyContext.h: creators["default"] = world_packet), and
+                // it is not autonomous behaviour at all -- it is the bot's
+                // entire reply layer for incoming packets:
+                //
+                //   group invite   -> accept invitation
+                //   trade status   -> accept trade
+                //   loot response  -> store loot
+                //   use game object-> add loot
+                //   item push      -> unlock/open/equip
+                //   very often     -> loot roll
+                //   release spirit -> release, revive from corpse
+                //   activate taxi  -> taxi, guild invite, lfg proposal
+                //
+                // Wiping it left party bots unable to accept an invite or a
+                // trade, unable to store or roll on loot, and unable to
+                // release after dying. It survived in the combat and dead
+                // engines, so this only bit out of combat -- which is exactly
+                // when looting, trading and inviting happen. Reported from
+                // several hours of live play.
+                //
+                // It carries no travel or questing behaviour, which is what
+                // the clear is actually for, so restoring it does not put the
+                // deterministic brain back in competition with the LLM.
+                ai->ChangeStrategy("+default", BOT_STATE_NON_COMBAT);
+            }
             ollamaTakenOver.insert(bot->GetGUID().GetRawValue());
 
             // One-shot proof that the combat and dead brains actually survive
