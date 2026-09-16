@@ -6,6 +6,13 @@ extern bool g_EnableOllamaBotControl;
 extern std::string g_OllamaBotControlUrl;
 extern std::string g_OllamaBotControlModel;
 extern bool g_EnableOllamaBotBuddyDebug;
+
+// Gameplay telemetry -- see mod-ollama-bot-buddy_telemetry.h.
+extern bool        g_EnableOllamaTelemetry;
+extern bool        g_OllamaTelemetryAllBots;
+extern bool        g_OllamaTelemetryFullPrompts;
+extern uint32_t    g_OllamaTelemetryPlayerRadius;
+extern std::string g_OllamaTelemetryDir;
 extern bool g_EnableBotBuddyAddon;
 // Which bots the LLM drives. Previously a single hardcoded name, which made
 // group content impossible: you cannot run a dungeon with one AI party member.
@@ -73,4 +80,5 @@ class OllamaBotControlConfigWorldScript : public WorldScript
 public:
     OllamaBotControlConfigWorldScript();
     void OnStartup() override;
+    void OnShutdown() override;
 };

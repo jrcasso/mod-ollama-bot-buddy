@@ -2,6 +2,7 @@
 #include "mod-ollama-bot-buddy_config.h"
 #include "mod-ollama-bot-buddy_api.h"
 #include "mod-ollama-bot-buddy_handler.h"
+#include "mod-ollama-bot-buddy_telemetry.h"
 #include "PlayerbotMgr.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -10,6 +11,7 @@
 #include "LootMgr.h"
 #include "Log.h"
 #include "DatabaseEnv.h"
+#include <chrono>
 #include <thread>
 #include <sstream>
 #include <vector>
@@ -502,6 +504,26 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
         bool result = HandleBotControlCommand(bot, command);
 
         RecordCommandResult(bot, type, result);
+
+        // The pair of events that answer "what did it try, and did it work".
+        // Emitted here because every command -- LLM, plan step and the
+        // deterministic shortcut alike -- passes through this one function.
+        if (Telemetry_ShouldRecord(bot))
+        {
+            uint64_t const turn = Telemetry_CurrentTurn(bot);
+
+            Telemetry_Event("command", bot, nullptr, turn, {
+                {"type",   type},
+                {"params", params},
+            });
+
+            Telemetry_Event("outcome", bot, nullptr, turn, {
+                {"type",   type},
+                {"ok",     result},
+                {"detail", result ? std::string() : GetActionOutcome(bot)},
+                {"stuck",  IsCommandStuck(bot, type)},
+            });
+        }
 
         if (result)
             RecordActionOutcome(bot, "");   // success: clear any stale failure
@@ -3834,6 +3856,16 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
                 // deterministic brain back in competition with the LLM.
                 ai->ChangeStrategy("+default", BOT_STATE_NON_COMBAT);
             }
+
+            if (Telemetry_ShouldRecord(bot))
+                Telemetry_Event("takeover", bot, nullptr, 0, {
+                    {"cleared_noncombat", g_OllamaClearNonCombat},
+                    {"combat",     ai->GetStrategies(BOT_STATE_COMBAT)},
+                    {"noncombat",  ai->GetStrategies(BOT_STATE_NON_COMBAT)},
+                    {"dead",       ai->GetStrategies(BOT_STATE_DEAD)},
+                    {"level",      bot->GetLevel()},
+                    {"in_group",   bot->GetGroup() != nullptr},
+                });
             ollamaTakenOver.insert(bot->GetGUID().GetRawValue());
 
             // One-shot proof that the combat and dead brains actually survive
@@ -4007,6 +4039,10 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             state.lastRequest = time(nullptr);
 
             std::string prompt = BuildBotPrompt(bot);
+
+            // Opens the turn. Everything this decision causes -- the reply, the
+            // command, the outcome -- carries this id.
+            uint64_t const turn = Telemetry_BeginTurn(bot);
             // Built here, on the world thread, because it reads the bot's map.
             size_t destCount = 0;
             {
@@ -4015,6 +4051,37 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
                 if (it != g_botDestinations.end()) destCount = it->second.size();
             }
             nlohmann::json actionSchema = BuildBotActionSchema(bot, destCount);
+
+            if (Telemetry_ShouldRecord(bot))
+            {
+                std::vector<std::string> situationLines;
+                for (size_t at = prompt.find("SITUATION:"); at != std::string::npos;
+                     at = prompt.find("SITUATION:", at + 1))
+                {
+                    size_t const eol = prompt.find('\n', at);
+                    situationLines.push_back(prompt.substr(
+                        at, eol == std::string::npos ? std::string::npos : eol - at));
+                }
+
+                nlohmann::json ev = {
+                    {"chars",        prompt.size()},
+                    {"destinations", destCount},
+                    // Lifted out of the prompt that was just built, not
+                    // recomputed: BuildSituationAssessment walks every creature
+                    // on the map, and running it twice per decision would cost
+                    // more than the telemetry is worth.
+                    {"situation",    situationLines},
+                    {"deterministic", g_OllamaDeterministicActions},
+                };
+
+                // The full prompt is 25KB and most of it is the same slab every
+                // time, so it is off by default; the situation block above is
+                // the part that actually varies and explains the decision.
+                if (g_OllamaTelemetryFullPrompts)
+                    ev["prompt"] = prompt;
+
+                Telemetry_Event("prompt", bot, nullptr, turn, ev);
+            }
 
             if (g_EnableOllamaBotBuddyDebug)
             {
@@ -4026,8 +4093,22 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
             // after the call is a use-after-free if the bot goes away during
             // inference. Park the reply instead; OnUpdate applies it.
             ObjectGuid botGuid = bot->GetGUID();
-            std::thread([botGuid, guid, prompt, actionSchema]() {
+            bool const record = Telemetry_ShouldRecord(bot);
+            std::thread([botGuid, guid, prompt, actionSchema, turn, record]() {
+                auto const started = std::chrono::steady_clock::now();
                 std::string llmReply = QueryOllamaLLM(prompt, actionSchema);
+                auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - started).count();
+
+                // Off the world thread, so no Player* here -- the guid and the
+                // turn are enough to join this to everything else.
+                if (record)
+                    Telemetry_Event("reply", nullptr, nullptr, turn, {
+                        {"bot_guid",   botGuid.GetCounter()},
+                        {"latency_ms", ms},
+                        {"empty",      llmReply.empty()},
+                        {"reply",      llmReply.substr(0, 2000)},
+                    });
 
                 std::lock_guard<std::mutex> lock(ollamaPendingRepliesMutex);
                 ollamaPendingReplies.push_back({botGuid, guid, std::move(llmReply)});

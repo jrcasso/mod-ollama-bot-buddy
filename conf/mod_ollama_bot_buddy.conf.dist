@@ -90,3 +90,54 @@ OllamaBotControl.SayCooldownSeconds = 240
 #     this happens outside city gates. 0 disables.
 #     Default: 3600
 OllamaBotControl.DuelCooldownSeconds = 3600
+
+# --------------------------------------------
+# GAMEPLAY TELEMETRY
+# --------------------------------------------
+#
+# A durable, correlated record of what bots decided and whether it worked, so a
+# situation can be revisited afterwards instead of reconstructed from prose in
+# Server.log. Written as JSONL, one file per server run, never truncated. Read
+# it with tools/telemetry.py.
+#
+# Every event from one decision shares a "turn" id, so a prompt, the reply it
+# produced, the command that came out and the outcome line up:
+#
+#   ./telemetry.py stuck      -- bots that retried the same failing thing
+#   ./telemetry.py failures   -- what did not work, most repeated first
+#   ./telemetry.py turn 8142  -- one decision start to finish
+#
+# The writer runs on its own thread and drops events rather than stalling the
+# world thread if it ever falls behind.
+
+# OllamaBotControl.Telemetry
+#     Description: Record gameplay telemetry. Set to 0 to disable entirely.
+#     Default:     1 (true)
+OllamaBotControl.Telemetry = 1
+
+# OllamaBotControl.TelemetryAllBots
+#     Description: Record every bot on the realm rather than only those in your
+#                  party or near you. Turns a session's file from megabytes into
+#                  gigabytes; useful only for whole-realm analysis.
+#     Default:     0 (false)
+OllamaBotControl.TelemetryAllBots = 0
+
+# OllamaBotControl.TelemetryPlayerRadius
+#     Description: How close a bot must be to a real player to be recorded when
+#                  TelemetryAllBots is off. Party members are always recorded
+#                  regardless of distance.
+#     Default:     120
+OllamaBotControl.TelemetryPlayerRadius = 120
+
+# OllamaBotControl.TelemetryFullPrompts
+#     Description: Store the entire prompt with every decision. It is ~25KB and
+#                  mostly the same static text each time; the situation lines,
+#                  which are recorded either way, are the part that varies.
+#                  Turn this on when investigating prompt wording specifically.
+#     Default:     0 (false)
+OllamaBotControl.TelemetryFullPrompts = 0
+
+# OllamaBotControl.TelemetryDir
+#     Description: Where the files go. This is a path inside the container.
+#     Default:     /azerothcore/env/dist/logs/telemetry
+OllamaBotControl.TelemetryDir = "/azerothcore/env/dist/logs/telemetry"
