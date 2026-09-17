@@ -11,6 +11,7 @@
 #include "LootMgr.h"
 #include "Log.h"
 #include "DatabaseEnv.h"
+#include <cctype>
 #include <chrono>
 #include <thread>
 #include <sstream>
@@ -187,6 +188,36 @@ static std::string GetActionOutcome(Player* bot)
     std::lock_guard<std::mutex> lock(g_lastActionOutcomeMutex);
     auto it = g_lastActionOutcome.find(bot->GetGUID().GetRawValue());
     return it == g_lastActionOutcome.end() ? std::string() : it->second;
+}
+
+// The model's "say" field is free text and was spoken verbatim. When the model
+// echoes its own prompt instead of answering -- which smaller models do more
+// readily -- section headers reach the player's chat window as bot speech
+// ("Bot state summary:", "Position: ...", raw JSON). Nothing downstream
+// validates it, so filter here: the prompt's own structural markers can never
+// be a legitimate thing for a bot to say out loud.
+static bool LooksLikePromptEcho(std::string const& msg)
+{
+    static const char* markers[] = {
+        "bot state", "summary:", "position:", "your known spells", "group status:",
+        "visible locations", "visible players", "last 5 commands", "your personality",
+        "coordinate calculation", "attacking:", "movement:", "your group role",
+        "as tank:", "as healer:", "as dps:", "nearby navigation", "active quests:",
+        "\"type\"", "\"params\"", "\"steps\"", "[do:",
+    };
+
+    std::string lower;
+    lower.reserve(msg.size());
+    for (char c : msg)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    for (char const* m : markers)
+        if (lower.find(m) != std::string::npos)
+            return true;
+
+    // Bare JSON is never speech.
+    size_t const first = lower.find_first_not_of(" \t\r\n");
+    return first != std::string::npos && (lower[first] == '{' || lower[first] == '[');
 }
 
 bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
@@ -531,7 +562,17 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
             RecordActionOutcome(bot, fmt::format("{} did not execute", type));
 
         if (!sayMsg.empty())
-            BotBuddyAI::Say(bot, sayMsg);
+        {
+            if (LooksLikePromptEcho(sayMsg))
+            {
+                LOG_INFO("playerbots", "[OllamaBotBuddy] Suppressed prompt echo from '{}': {}",
+                         bot->GetName(), sayMsg.substr(0, 80));
+            }
+            else
+            {
+                BotBuddyAI::Say(bot, sayMsg);
+            }
+        }
 
         if (g_EnableOllamaBotBuddyDebug)
         {
