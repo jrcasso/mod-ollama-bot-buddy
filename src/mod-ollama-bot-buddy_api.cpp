@@ -228,6 +228,17 @@ namespace BotBuddyAI
         {
             // Check interaction distance FIRST - move closer if needed
             float distance = bot->GetDistance(creature);
+            // Refuse targets the bot cannot reach inside a decision interval.
+            // Returning false hands this tick back to the native brain, which
+            // ClearNonCombatStrategies=0 leaves running -- strictly better than
+            // burning the interval walking toward something 2000 yards away.
+            if (distance > g_OllamaBotMaxTargetDistance)
+            {
+                if (g_EnableOllamaBotBuddyDebug)
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} REJECTED unreachable target {} at {:.1f}y (max {:.1f})",
+                        bot->GetName(), creature->GetName(), distance, g_OllamaBotMaxTargetDistance);
+                return false;
+            }
             if (distance > INTERACTION_DISTANCE)
             {
                 // Too far - move closer first
@@ -265,6 +276,13 @@ namespace BotBuddyAI
             // Check interaction distance FIRST - move closer if needed  
             float distance = bot->GetDistance(go);
             float interactionDist = go->GetInteractionDistance();
+            if (distance > g_OllamaBotMaxTargetDistance)
+            {
+                if (g_EnableOllamaBotBuddyDebug)
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} REJECTED unreachable object at {:.1f}y (max {:.1f})",
+                        bot->GetName(), distance, g_OllamaBotMaxTargetDistance);
+                return false;
+            }
             if (distance > interactionDist)
             {
                 // Too far - move closer first

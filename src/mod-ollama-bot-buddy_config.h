@@ -12,6 +12,8 @@ extern bool        g_EnableOllamaTelemetry;
 extern bool        g_OllamaTelemetryAllBots;
 extern bool        g_OllamaTelemetryFullPrompts;
 extern uint32_t    g_OllamaTelemetryPlayerRadius;
+// Max distance a bot will walk for an LLM-chosen target (ITERATIONS row 91).
+extern float       g_OllamaBotMaxTargetDistance;
 extern std::string g_OllamaTelemetryDir;
 extern bool g_EnableBotBuddyAddon;
 // Which bots the LLM drives. Previously a single hardcoded name, which made

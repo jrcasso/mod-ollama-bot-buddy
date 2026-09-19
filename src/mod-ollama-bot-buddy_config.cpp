@@ -11,6 +11,7 @@ bool        g_EnableOllamaTelemetry       = true;
 bool        g_OllamaTelemetryAllBots      = false;
 bool        g_OllamaTelemetryFullPrompts  = false;
 uint32_t    g_OllamaTelemetryPlayerRadius = 120;
+float       g_OllamaBotMaxTargetDistance = 200.0f;
 std::string g_OllamaTelemetryDir          = "/azerothcore/env/dist/logs/telemetry";
 bool g_EnableBotBuddyAddon = false;
 std::string g_OllamaBotNames = "Ollamatest";
@@ -38,6 +39,12 @@ void OllamaBotControlConfigWorldScript::OnStartup()
     g_OllamaTelemetryAllBots      = sConfigMgr->GetOption<bool>("OllamaBotControl.TelemetryAllBots", false);
     g_OllamaTelemetryFullPrompts  = sConfigMgr->GetOption<bool>("OllamaBotControl.TelemetryFullPrompts", false);
     g_OllamaTelemetryPlayerRadius = sConfigMgr->GetOption<uint32_t>("OllamaBotControl.TelemetryPlayerRadius", 120);
+    // Measured (row 91): the model picked targets a median of 2247 yards away,
+    // 62% beyond 1000 yards, max 19173. `interact` walked toward any of them
+    // with no bound, so a 20s decision was spent in transit and never completed.
+    // 200 matches the widest candidate-gathering radius already in the module
+    // (GetNearbyWaypoints), so anything beyond it was never a offered option.
+    g_OllamaBotMaxTargetDistance = sConfigMgr->GetOption<float>("OllamaBotControl.MaxTargetDistance", 200.0f);
     g_OllamaTelemetryDir          = sConfigMgr->GetOption<std::string>("OllamaBotControl.TelemetryDir",
                                         "/azerothcore/env/dist/logs/telemetry");
     g_EnableBotBuddyAddon = sConfigMgr->GetOption<bool>("OllamaBotControl.EnableBotBuddyAddon", false);
