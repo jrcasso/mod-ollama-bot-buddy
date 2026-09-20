@@ -2754,7 +2754,19 @@ static std::string BuildBotPrompt(Player* bot)
         LOG_INFO("server.loading", "[OllamaBotBuddy] Bot Snapshot for '{}': {}", botName, safeSnapshot);
     }
 
-    oss << R"(You are an AI-controlled bot in World of Warcraft. Your task is to follow these strict rules and reply only with the listed acceptable commands:
+    // ORDERING MATTERS FOR PREFIX CACHING (ITERATIONS row 105).
+    //
+    // This ~19KB rules block is byte-identical for every bot, but it used to be
+    // emitted *after* the per-bot snapshot. That made the prompt start with
+    // "Name: <bot>", so no two bots shared a prefix and Ollama re-evaluated all
+    // ~8k tokens every request (~143s). Truncation to 2048 was accidentally
+    // hiding this by collapsing every prompt to a common tail, which is why
+    // raising num_ctx in row 101 cost 10x throughput.
+    //
+    // Defining it here (instead of streaming it) takes it out of `oss`, and the
+    // return prepends it, so the wire prompt is [static rules][per-bot state]
+    // and the static half is a genuine shared prefix across all bots.
+    static std::string const kStaticRules = R"(You are an AI-controlled bot in World of Warcraft. Your task is to follow these strict rules and reply only with the listed acceptable commands:
 
     Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers that have available quests, talking to other players and efficient progression. If no available quests or viable enemies are nearby, turn in quests, explore for new quests, dungeons, raids, professions, or gold opportunities.
 
@@ -3020,7 +3032,7 @@ static std::string BuildBotPrompt(Player* bot)
 
     oss << "\n" << BuildSituationAssessment(bot);
 
-    return oss.str();
+    return kStaticRules + oss.str();
 }
 
 namespace
