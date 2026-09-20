@@ -12,6 +12,7 @@ bool        g_OllamaTelemetryAllBots      = false;
 bool        g_OllamaTelemetryFullPrompts  = false;
 uint32_t    g_OllamaTelemetryPlayerRadius = 120;
 float       g_OllamaBotMaxTargetDistance = 200.0f;
+uint32_t    g_OllamaBotControlNumCtx = 12288;
 std::string g_OllamaTelemetryDir          = "/azerothcore/env/dist/logs/telemetry";
 bool g_EnableBotBuddyAddon = false;
 std::string g_OllamaBotNames = "Ollamatest";
@@ -45,6 +46,13 @@ void OllamaBotControlConfigWorldScript::OnStartup()
     // 200 matches the widest candidate-gathering radius already in the module
     // (GetNearbyWaypoints), so anything beyond it was never a offered option.
     g_OllamaBotMaxTargetDistance = sConfigMgr->GetOption<float>("OllamaBotControl.MaxTargetDistance", 200.0f);
+    // Ollama defaults to a 2048-token context. Measured on 106 live requests
+    // (row 99), the decision prompt averages 8124 tokens and peaks at 10272, so
+    // every single request was logging
+    //   truncating input prompt limit=2050 prompt=8124 keep=4
+    // and the model was deciding on the tail ~25% of its prompt with only four
+    // leading tokens kept. 12288 covers the observed maximum plus num_predict.
+    g_OllamaBotControlNumCtx = sConfigMgr->GetOption<uint32_t>("OllamaBotControl.NumCtx", 12288);
     g_OllamaTelemetryDir          = sConfigMgr->GetOption<std::string>("OllamaBotControl.TelemetryDir",
                                         "/azerothcore/env/dist/logs/telemetry");
     g_EnableBotBuddyAddon = sConfigMgr->GetOption<bool>("OllamaBotControl.EnableBotBuddyAddon", false);

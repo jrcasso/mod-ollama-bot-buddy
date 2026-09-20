@@ -1781,6 +1781,11 @@ static std::string QueryOllamaLLM(const std::string& prompt, const nlohmann::jso
         // ramble for >1700 tokens, which dominates request latency.
         {"options", {
             {"num_predict", 200},
+            // Without this Ollama uses its 2048 default and silently truncates
+            // an ~8k-token prompt down to its tail, keeping only 4 leading
+            // tokens (row 99). The model then decides without the quest state
+            // or the nearby-object list it is being asked to reason over.
+            {"num_ctx", g_OllamaBotControlNumCtx},
             {"temperature", 0.2}
         }}
     };
