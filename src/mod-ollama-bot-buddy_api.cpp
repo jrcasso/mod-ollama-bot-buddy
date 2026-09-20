@@ -558,6 +558,31 @@ namespace BotBuddyAI
         
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
         if (!spellInfo) return false;
+
+        // Passive spells, weapon and armour proficiencies are not castable, but the
+        // model picks them out of its snapshot and issues them anyway -- observed
+        // "Casting spell Polearms" and "Casting spell Simple Kilt", both with
+        // spell range 0.0 (ITERATIONS row 93). Every such cast fails by
+        // construction, so drop it and let the native brain use the tick.
+        if (spellInfo->IsPassive())
+        {
+            if (g_EnableOllamaBotBuddyDebug)
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} REJECTED uncastable spell {}",
+                    bot->GetName(), spellInfo->SpellName[0]);
+            return false;
+        }
+
+        // Same unbounded-walk defect the interact path had (row 92): an
+        // out-of-range spell falls through to "reach spell"/"reach melee" with no
+        // cap, so a target 5797 yards away starts a cross-world walk that can
+        // never complete. Measured: 93% of casts exceeded the spell's own range.
+        if (target && bot->GetDistance(target) > g_OllamaBotMaxTargetDistance)
+        {
+            if (g_EnableOllamaBotBuddyDebug)
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} REJECTED unreachable cast target at {:.1f}y (max {:.1f})",
+                    bot->GetName(), bot->GetDistance(target), g_OllamaBotMaxTargetDistance);
+            return false;
+        }
         
         // Set the target in the AI context if provided
         if (target) {
